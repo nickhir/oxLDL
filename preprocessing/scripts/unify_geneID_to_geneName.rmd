@@ -1,0 +1,76 @@
+---
+title: "GeneID to GeneName mapping" 
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 350
+)
+```
+
+## **Introduction**
+The output of the [nf-core RNAseq pipeline](https://github.com/nf-core/rnaseq) already contains count tables. 
+However, in this table there are some ensembl gene names that map to multiple ensembl IDs. 
+This will create problems downstream because we want to primarily use the gene names.
+In this script we will make sure that the mapping is 1 to 1. 
+
+```{r, load libraries}
+library(tidyverse)
+```
+
+```{r load the count table of interest}
+raw_counts <- data.table::fread(here("data", "oxLDL_data", "RNA_seq", "results", "star_salmon", "salmon.merged.gene_counts_length_scaled.tsv"),
+    data.table = FALSE
+)
+gene_ids <- raw_counts %>%
+    group_by(gene_name) %>%
+    mutate(n_ = n()) %>%
+    filter(n_ > 1) %>%
+    pull(gene_id) 
+
+subset_counts <- raw_counts %>%
+    filter(gene_id %in% gene_ids) %>% 
+    arrange(gene_name)
+
+# we will keep the gene_id which has more counts on average across all samples
+subset_counts$MM_avg <- rowMeans(subset_counts[, grepl("^MM", names(subset_counts))])
+keep_gene_ids <- subset_counts %>%
+    group_by(gene_name) %>%
+    slice_max(MM_avg, n = 1, with_ties = FALSE) %>%
+    pull(gene_id)
+remove_gene_ids <- setdiff(gene_ids, keep_gene_ids)
+
+raw_counts_filtered <- raw_counts %>%
+    filter(!gene_id %in% remove_gene_ids)
+
+# QC check -> should be empty.
+raw_counts_filtered %>%
+    group_by(gene_name) %>%
+    mutate(n_ = n()) %>%
+    filter(n_ > 1) %>%
+    pull(gene_id) 
+
+data.table::fwrite(
+    x = raw_counts_filtered %>% select(-gene_id),
+    file = here("preprocessing", "results", "gene_counts_length_scaled_filtered.tsv"),
+    sep = "\t", row.names = FALSE
+)
+
+
+```

@@ -1,0 +1,133 @@
+---
+title: "HipSci cell lines name check"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 350
+)
+```
+
+## **Introduction**
+The project uses HipSci cell lines. A lot of information about them is publically available. 
+Here we see what kind of information we can find about the HipSci lines that we are using in 
+the oxLDL project.
+
+
+```{r, load libraries}
+library(tidyverse)
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **Load oxLDL mdata and HipSci information**
+```{r, load in data}
+# important: NAs are encoded as strings ("NA")
+mdata_oxLDL <- readxl::read_excel(here("data", "mdata_google_spreadsheet.xlsx"),
+    sheet = "RNA Sequencing samples"
+) %>% data.frame()
+mdata_hipsci <- data.table::fread(
+    here("data", "oxLDL_data", "HipSci", "HipSci_cell_lines.tsv")
+) %>% data.frame()
+
+mdata_hipsci_donor <- data.table::fread(
+    here("data", "oxLDL_data", "HipSci", "HipSci_donors.tsv")
+) %>% data.frame()
+
+# in our data HipSci cell line is encoded in the "line" column.
+# I am unsure what the number means, but I do not think that it is really relevant so remove it.
+# -> each line is uniquely identifed by 4 letters
+oxLDL_line_id <- substr(mdata_oxLDL$line, 1, 4) %>% unique()
+
+# in the hipsci data, the line information is encoded in the name.
+# we will again remove the number
+hipsci_line_id <- gsub(".*-(\\w+)", "\\1", mdata_hipsci$Name) %>%
+    str_remove_all(., "_") %>%
+    str_remove_all(., "\\d") %>%
+    unique()
+
+mdata_hipsci$id <- gsub(".*-(\\w+)", "\\1", mdata_hipsci$Name) %>%
+    str_remove_all(., "_") %>%
+    str_remove_all(., "\\d")
+
+hipsci_donor_id <- mdata_hipsci_donor$Name %>% str_remove_all(., "HPSI-") %>% unique()
+
+
+# go through our cell lines and see if we can identify a match in the hipsci data
+overlap_cell_line <- sapply(oxLDL_line_id, function(id) {
+    return(any(grepl(id, hipsci_line_id)))
+})
+# 3 of our samples we do not find in the hipsci data
+table(overlap_cell_line)
+overlap_cell_line[overlap_cell_line==FALSE]
+# google also does not return any results for these 3 cell lines...
+# also cant find them here: /rds/project/jmmh2/rds-jmmh2-results/private/oxLDL/HipSci/HipSci_sample_biosamples.json
+
+# no idea what is "wrong" with these samples... 
+mdata %>% filter(grepl("jacg", line))
+mdata %>% filter(grepl("guif", line))
+mdata %>% filter(grepl("guio", line))
+
+
+mdata_hipsci %>%
+    filter(id %in% oxLDL_line_id) %>%
+    select(id, Donor.Consent) %>%
+    distinct(., .keep_all = TRUE) %>%
+    pull(Donor.Consent) %>% 
+    table()
+
+
+# if we check for overlap with donor, there are 3 additional samples for which
+# we do not find a match:
+# foqj, yuyn and ffdl
+# if we google them though, we can see that they show up for hipsci
+overlap_donor <- sapply(oxLDL_line_id, function(id) {
+    return(any(grepl(id, hipsci_donor_id)))
+})
+table(overlap_donor)
+overlap_donor[overlap_donor==FALSE]
+mdata_oxLDL %>% filter(grepl("foqj", line))
+```
+
+
+
+## **Overlap with downloaded genotype data**
+We have also downloaded some genotype information. Check for overlap there.
+```{r}
+/rds/project/jmmh2/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data/filereport_analysis_PRJEB11750_tsv.txt
+genotype_mdata <- data.table::fread(
+    here("data", "oxLDL_data", "HipSci", "genotype_array_data", "filereport_analysis_PRJEB11750_tsv.txt")
+) %>% data.frame()
+
+ftp_files <- genotype_mdata$submitted_ftp %>% str_split(., ";") %>% unlist()
+# remove all strings that contain ped
+ftp_files <- ftp_files[!grepl("\\.ped", ftp_files)]
+
+
+# in total we have 695 unique ids. if we remove the number this reduces to 242
+genotype_id <- gsub('.*-(\\w+)\\.we.*', "\\1", ftp_files) %>% str_remove_all(., "_\\d") %>% unique()
+
+overlap_genotype <- sapply(oxLDL_line_id, function(id) {
+    return(any(grepl(id, genotype_id)))
+})
+table(overlap_genotype)
+overlap_genotype[overlap_genotype==FALSE]
+```
