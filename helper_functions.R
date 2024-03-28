@@ -6,6 +6,7 @@ get_assoc_pval_categorical <- function(x, y) {
     }
     return(p_val)
 }
+            p.val <- round(broom::tidy(kruskal.test(get(tmp_pcs) ~ get(covar), data = df))$p.value, 5)
 
 get_assoc_pval_continous <- function(x, y) {
     p_val <- broom::tidy(lm(y ~ x))[2, "p.value", drop=TRUE] # pick second row, the first will be the intercept.
@@ -45,10 +46,14 @@ covar_correlation <- function(df, covars, components = c("PC1", "PC2", "PC3", "P
     covar_p_vals <- lapply(setNames(covars, covars), function(covar) {
         print(str_interp("Processing covar ${covar}"))
         tmp_cov <- df[, covar]
+        if (is.factor(tmp_cov)) {
+            print("Assuming variable is a factor")
+        } else {
+            print("Assuming variable is continuous")
+        }
         if (n_distinct(tmp_cov) == 1) {
             stop(str_interp("${covar} only has a single level."))
         }
-
         # go through the different components
         component_p_vals <- lapply(setNames(components, components), function(component) {
             tmp_component <- df[, component]
@@ -98,9 +103,10 @@ covar_correlation <- function(df, covars, components = c("PC1", "PC2", "PC3", "P
     return(list(
         adjusted = adjusted_matrix,
         raw = bind_rows(covar_p_vals) %>% data.frame() %>% magrittr::set_rownames(covars),
-        heatmap=heatmap
+        heatmap = heatmap
     ))
 }
+
 
 
 
@@ -135,7 +141,7 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
                 theme(legend.position = "none") +
                 ylab(ylab) +
                 xlab(xlab) +
-                ylim(min(df[, tmp_pcs]) - 3, max(df[, tmp_pcs]) + 50)
+                ylim(min(df[, tmp_pcs]) - diff(range(df[, tmp_pcs])) * 0.15, max(df[, tmp_pcs]) + diff(range(df[, tmp_pcs])) * 0.1)
         } else {
             # calc p value with the kruskal test
             p.val <- round(broom::tidy(kruskal.test(get(tmp_pcs) ~ get(covar), data = df))$p.value, 5)
@@ -143,7 +149,7 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
                 geom_boxplot(data = df, aes_string(x = covar, y = tmp_pcs, fill = covar), width = 0.6) +
                 geom_label(aes(
                     x = median(1:n_distinct(df[, covar])),
-                    y = max(df[, tmp_pcs]) + 1,
+                    y = max(df[, tmp_pcs]) + diff(range(df[, tmp_pcs])) * 0.1,
                     label = paste0("p value = ", p.val)
                 )) +
                 theme_Publication() %+%

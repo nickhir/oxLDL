@@ -40,6 +40,7 @@ library(PCAtools)
 library(tidyverse)
 library(umap)
 library(patchwork)
+library(httpgd)
 
 library(here)
 source(here("plot_theme.R"))
@@ -95,6 +96,9 @@ submission_mdata <- data.table::fread(here("data", "oxLDL_data", "RNA_seq", "mac
 )
 mdata$ethnicity <- ifelse(mdata$ethnicity == "White - White other", "White - Other", mdata$ethnicity)
 mdata$ethnicity <- ifelse(mdata$ethnicity == "Asian /Asian British- Indian", "Asian British- Indian", mdata$ethnicity)
+factor_columns <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id", "oxldlset")
+mdata[factor_columns] <- lapply(mdata[factor_columns], factor)
+
 stopifnot(all(mdata$sampleid %in% submission_mdata$sample))
 stopifnot(n_distinct(mdata$sampleid) == nrow(mdata))
 mdata %>%
@@ -269,7 +273,6 @@ dev.off()
 # PCA PLOTS #
 #############
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
-pca_plot_df[columns_to_plot] <- lapply(pca_plot_df[columns_to_plot], factor)
 
 plots <- lapply(columns_to_plot, function(x) {
     p <- density_pca(
@@ -331,8 +334,6 @@ ggsave(
 ##############
 # UMAP PLOTS #
 ##############
-umap_plot_df[columns_to_plot] <- lapply(umap_plot_df[columns_to_plot], factor)
-
 plots <- lapply(columns_to_plot, function(x) {
     p <- density_pca(
         df = umap_plot_df,
@@ -404,15 +405,92 @@ norm_counts  <- counts(dds0, normalized = TRUE)
 
 mod  <- model.matrix(~ sampletype, colData(dds0))
 mod0 <- model.matrix(~1, colData(dds0))
+
+# important: The number of SVs matters.
+# I.e. if you try 2 runs with 10 or 15, the first 10 of the run with 15 wont be the same as the other run.
 svseq <- svaseq(norm_counts, mod, mod0, n.sv = 15)
 saveRDS(svseq, here("QC", "results", "sva_15SV.rds"))
 
+# try and find out what the SVs correspond to. For this we can use the same functions as above
+# I assume that the order in svseq does not change, because that would just be random
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV",1:15)
+mdata <- cbind(mdata, data.frame(SVs))
+
+correlation_SVs <- covar_correlation(
+    df = mdata,
+    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
+    components =paste0("SV",1:15)
+)
+
+plot_categorical_covar(mdata %>% mutate(SV1=SV1*40), covar = "pool", PC="SV1")
+plot_categorical_covar(mdata %>% mutate(SV1=SV1*40) , covar = "batch1id", PC="SV1")
+plot_categorical_covar(mdata %>% mutate(SV1=SV1*40) %>% mutate(oxldlset=factor(oxldlset)) , covar = "oxldlset", PC="SV1")
+plot_categorical_covar(mdata %>% mutate(SV10 = SV10 * 40) %>% mutate(oxldlset = factor(oxldlset)),
+    covar = "oxldlset", PC = "SV10"
+)
+
+plot_categorical_covar(mdata,
+    covar = "set", PC = "SV1"
+)
 
 
+tmp_cov <- mdata[, "oxldlset"]
+tmp_component <-mdata[, "SV10"]
 
+get_assoc_pval_categorical(x = tmp_cov, y = tmp_component)
+broom::tidy(kruskal.test(tmp_component ~ tmp_cov))$p.value
 
 ```
 
+However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
+https://support.bioconductor.org/p/9137741/
 ```{r}
-5+5
+
+
+dataset <- mdata[, c("pool", "batch1id", "oxldlset")] %>% sample_n(30)
+
+cont_table <- table(dataset$pool, dataset$batch1id, dataset$oxldlset)
+
+library(gmodels)
+mosaicplot(cont_table)
+
+
+mdata %>% group_by(pool, oxldlset) %>% tally
+
+
+
+diff(range(mdata$SV1))
 ```
+
+
+
+# This is the vignette for sva essentially
+
+```{r, eval=FALSE}
+library(zebrafishRNASeq)
+data(zfGenes)
+filter = apply(zfGenes, 1, function(x) length(x[x>5])>=2)
+filtered = zfGenes[filter,]
+genes = rownames(filtered)[grep("^ENS", rownames(filtered))]
+controls = grepl("^ERCC", rownames(filtered))
+spikes =  rownames(filtered)[grep("^ERCC", rownames(filtered))]
+group = as.factor(rep(c("Ctl", "Trt"), each=3))
+set = EDASeq::newSeqExpressionSet(as.matrix(filtered),
+    phenoData = data.frame(group, row.names = colnames(filtered))
+)
+dat0 = counts(set)
+
+## Set null and alternative models (ignore batch)
+mod1 = model.matrix(~group)
+mod0 = cbind(mod1[,1])
+
+## Estimate batch with svaseq (unsupervised)
+batch_unsup_sva = svaseq(dat0,mod1,mod0,n.sv=1)$sv
+batch_unsup_sva_3 = svaseq(dat0,mod1,mod0,n.sv=3)$sv
+
+batch_unsup_sva[, 1] == batch_unsup_sva_3[, 1]
+
+
+```
+
