@@ -39,6 +39,7 @@ library(magrittr)
 library(PCAtools)
 library(tidyverse)
 library(umap)
+library(patchwork)
 
 library(here)
 source(here("plot_theme.R"))
@@ -48,7 +49,7 @@ source(here("helper_functions.R"))
 
 
 ```{r}
-function(input_vector, include_n=FALSE) {
+plot_column_table <- function(input_vector, include_n=FALSE) {
   # Convert input vector to data frame
   data_df <- data.frame(values = input_vector)
   
@@ -184,7 +185,7 @@ combined_plot <- wrap_plots(
     byrow = TRUE
 )
 ggsave(combined_plot,
-    filename = here("QC", "results", "imgs", "mdata_overview2.png"), 
+    filename = here("QC", "results", "imgs", "mdata_overview.png"), 
     dpi = 350, width = 18, height = 8
 )
 ```
@@ -218,7 +219,7 @@ dds0 <- DESeqDataSetFromMatrix(round(raw_counts_matrix),
     design = ~1
 )
 # remove some lowly expressed genes
-keep <- filterByExpr(counts(dds0), group = mdata$sampletype)
+keep <- edgeR::filterByExpr(counts(dds0), group = mdata$sampletype)
 dds0 <- dds0[keep,]
 vsd_data <- vst(dds0)
 norm_data <- assay(vsd_data)
@@ -260,7 +261,7 @@ association_output <- covar_correlation(
     components = paste0("PC", 1:15)
 )
 
-png(here("QC", "results", "imgs", "association_heatmap_2.png"), res=350, width=9, height=5.5, units="in")
+png(here("QC", "results", "imgs", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
 association_output$heatmap
 dev.off()
 
@@ -292,7 +293,7 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "PCA_all_covariates_PC1_PC2_2.png"),
+    filename = here("QC", "results", "imgs", "PCA_all_covariates_PC1_PC2.png"),
     dpi = 350,
     width = 20,
     height = 15,
@@ -321,7 +322,7 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "PCA_all_covariates_boxplots_2.png"),
+    filename = here("QC", "results", "imgs", "PCA_all_covariates_boxplots.png"),
     dpi = 350,
     width = 20,
     height = 15,
@@ -351,7 +352,7 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "UMAP_all_covariates_2.png"),
+    filename = here("QC", "results", "imgs", "UMAP_all_covariates.png"),
     dpi = 350,
     width = 20,
     height = 15,
@@ -380,7 +381,7 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "UMAP_all_covariates_boxplots_2.png"),
+    filename = here("QC", "results", "imgs", "UMAP_all_covariates_boxplots.png"),
     dpi = 350,
     width = 20,
     height = 15,
@@ -397,13 +398,21 @@ See [Jeff Leeks reply](https://support.bioconductor.org/p/76381/). We take norma
 Internally first step of `svaseq` is log transformation so important that our normalized counts are not log transformed.
 
 ```{r}
+library(sva)
 dds0 <- estimateSizeFactors(dds0)
 norm_counts  <- counts(dds0, normalized = TRUE)
 
 mod  <- model.matrix(~ sampletype, colData(dds0))
-mod0 <- model.matrix(~   1, colData(dds0))
-svseq <- svaseq(norm_counts, mod, mod0, n.sv = 10)
+mod0 <- model.matrix(~1, colData(dds0))
+svseq <- svaseq(norm_counts, mod, mod0, n.sv = 15)
+saveRDS(svseq, here("QC", "results", "sva_15SV.rds"))
 
 
 
+
+
+```
+
+```{r}
+5+5
 ```

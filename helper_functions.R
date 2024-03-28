@@ -130,7 +130,7 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
         if (n_distinct(df[, covar]) == 2) {
             p <- ggplot(df, aes_string(x = covar, y = tmp_pcs, fill = covar)) +
                 geom_boxplot(width = 0.6) +
-                geom_signif(comparisons = list(levels(df[, covar]))) +
+                ggsignif::geom_signif(comparisons = list(levels(df[, covar]))) +
                 theme_Publication() %+%
                 theme(legend.position = "none") +
                 ylab(ylab) +

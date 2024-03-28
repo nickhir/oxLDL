@@ -112,7 +112,6 @@ mdata_oxLDL %>% filter(grepl("foqj", line))
 ## **Overlap with downloaded genotype data**
 We have also downloaded some genotype information. Check for overlap there.
 ```{r}
-/rds/project/jmmh2/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data/filereport_analysis_PRJEB11750_tsv.txt
 genotype_mdata <- data.table::fread(
     here("data", "oxLDL_data", "HipSci", "genotype_array_data", "filereport_analysis_PRJEB11750_tsv.txt")
 ) %>% data.frame()
