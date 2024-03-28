@@ -6,7 +6,7 @@ get_assoc_pval_categorical <- function(x, y) {
     }
     return(p_val)
 }
-            p.val <- round(broom::tidy(kruskal.test(get(tmp_pcs) ~ get(covar), data = df))$p.value, 5)
+          
 
 get_assoc_pval_continous <- function(x, y) {
     p_val <- broom::tidy(lm(y ~ x))[2, "p.value", drop=TRUE] # pick second row, the first will be the intercept.
@@ -130,7 +130,7 @@ plot_continuous_covar <- function(df, covar, PC, x_pos = "left",
 #' @examples
 #' df <- data.frame(covar = factor(rep(c("A", "B"), 50)), PC1_explained_var = runif(100), PC2_explained_var = runif(100))
 #' plot_categorical_covar(df, "covar", c("PC1", "PC2"))
-plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver()) {
+plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver(), bonferroni_correction=FALSE) {
     plots <- lapply(PC, function(tmp_pcs) {
         # get the explained variation of the PC. for that we have to get the correct column
         if (n_distinct(df[, covar]) == 2) {
@@ -144,7 +144,12 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
                 ylim(min(df[, tmp_pcs]) - diff(range(df[, tmp_pcs])) * 0.15, max(df[, tmp_pcs]) + diff(range(df[, tmp_pcs])) * 0.1)
         } else {
             # calc p value with the kruskal test
-            p.val <- round(broom::tidy(kruskal.test(get(tmp_pcs) ~ get(covar), data = df))$p.value, 5)
+            p.val <- broom::tidy(kruskal.test(get(tmp_pcs) ~ get(covar), data = df))$p.value
+            if(bonferroni_correction){
+                p.val = round(p.val * length(PC),4)
+            } else {
+                p.val = round(p.val, 4)
+            }
             p <- ggplot() +
                 geom_boxplot(data = df, aes_string(x = covar, y = tmp_pcs, fill = covar), width = 0.6) +
                 geom_label(aes(

@@ -408,38 +408,60 @@ mod0 <- model.matrix(~1, colData(dds0))
 
 # important: The number of SVs matters.
 # I.e. if you try 2 runs with 10 or 15, the first 10 of the run with 15 wont be the same as the other run.
-svseq <- svaseq(norm_counts, mod, mod0, n.sv = 15)
-saveRDS(svseq, here("QC", "results", "sva_15SV.rds"))
+svseq <- svaseq(norm_counts, mod, mod0, n.sv = 10)
+saveRDS(svseq, here("QC", "results", "sva_10SV.rds"))
 
+```
+
+```{r}
 # try and find out what the SVs correspond to. For this we can use the same functions as above
 # I assume that the order in svseq does not change, because that would just be random
 SVs <- svseq$sv
-colnames(SVs) <- paste0("SV",1:15)
+colnames(SVs) <- paste0("SV",1:10)
 mdata <- cbind(mdata, data.frame(SVs))
-
+covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id")
 correlation_SVs <- covar_correlation(
     df = mdata,
-    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
-    components =paste0("SV",1:15)
+    covars = covar_list,
+    components =paste0("SV",1:10)
 )
+png(here("QC", "results", "imgs", "SVA_10", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
+correlation_SVs$heatmap
+dev.off()
 
-plot_categorical_covar(mdata %>% mutate(SV1=SV1*40), covar = "pool", PC="SV1")
-plot_categorical_covar(mdata %>% mutate(SV1=SV1*40) , covar = "batch1id", PC="SV1")
-plot_categorical_covar(mdata %>% mutate(SV1=SV1*40) %>% mutate(oxldlset=factor(oxldlset)) , covar = "oxldlset", PC="SV1")
-plot_categorical_covar(mdata %>% mutate(SV10 = SV10 * 40) %>% mutate(oxldlset = factor(oxldlset)),
-    covar = "oxldlset", PC = "SV10"
-)
+# check for association
+for (x in covar_list) {
+    print(x)
+    p <- plot_categorical_covar(
+        df = mdata,
+        covar = x,
+        PC = paste0("SV", 1:10),
+        bonferroni_correction = TRUE
+    )
+    p <- lapply(p, function(k) {
+        k <- k + geom_hline(yintercept = 0, linetype = "dashed")
+    })
 
-plot_categorical_covar(mdata,
-    covar = "set", PC = "SV1"
-)
+    p <- p %>% wrap_plots(., ncol = 5) &
+        theme(
+            axis.text.x = element_blank(),
+            axis.text.y = element_text(size = 5, face = "bold")
+        )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    ggsave(
+        plot = p,
+        filename = here("QC", "results", "imgs", "SVA_10", str_interp("SV_associations_${x}.png")),
+        dpi = 350,
+        width = 15,
+        height = 8,
+    )
+}
 
 
-tmp_cov <- mdata[, "oxldlset"]
-tmp_component <-mdata[, "SV10"]
-
-get_assoc_pval_categorical(x = tmp_cov, y = tmp_component)
-broom::tidy(kruskal.test(tmp_component ~ tmp_cov))$p.value
 
 ```
 
