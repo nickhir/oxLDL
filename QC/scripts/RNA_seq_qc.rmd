@@ -408,24 +408,24 @@ mod0 <- model.matrix(~1, colData(dds0))
 
 # important: The number of SVs matters.
 # I.e. if you try 2 runs with 10 or 15, the first 10 of the run with 15 wont be the same as the other run.
-svseq <- svaseq(norm_counts, mod, mod0, n.sv = 10)
-saveRDS(svseq, here("QC", "results", "sva_10SV.rds"))
-
+#svseq <- svaseq(norm_counts, mod, mod0, n.sv = 10)
+#saveRDS(svseq, here("QC", "results", "sva_10SV.rds"))
+svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
 ```
 
 ```{r}
 # try and find out what the SVs correspond to. For this we can use the same functions as above
 # I assume that the order in svseq does not change, because that would just be random
 SVs <- svseq$sv
-colnames(SVs) <- paste0("SV",1:10)
-mdata <- cbind(mdata, data.frame(SVs))
+colnames(SVs) <- paste0("SV",1:15)
+mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
 covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id")
 correlation_SVs <- covar_correlation(
     df = mdata,
     covars = covar_list,
-    components =paste0("SV",1:10)
+    components =paste0("SV",1:15)
 )
-png(here("QC", "results", "imgs", "SVA_10", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
+png(here("QC", "results", "imgs", "SVA_15", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
 correlation_SVs$heatmap
 dev.off()
 
@@ -435,7 +435,7 @@ for (x in covar_list) {
     p <- plot_categorical_covar(
         df = mdata,
         covar = x,
-        PC = paste0("SV", 1:10),
+        PC = paste0("SV", 1:15),
         bonferroni_correction = TRUE
     )
     p <- lapply(p, function(k) {
@@ -454,36 +454,110 @@ for (x in covar_list) {
         )
     ggsave(
         plot = p,
-        filename = here("QC", "results", "imgs", "SVA_10", str_interp("SV_associations_${x}.png")),
+        filename = here("QC", "results", "imgs", "SVA_15", str_interp("SV_associations_${x}.png")),
         dpi = 350,
         width = 15,
-        height = 8,
+        height = 10,
     )
 }
+```
 
+## Batch corrected PCA 
 
+```{r}
+################
+# USING 10 SVs #
+################
+svseq <- readRDS(here("QC", "results", "sva_10SV.rds"))
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV",1:10)
+colData(dds0) <- cbind(colData(dds0), SVs)
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+norm_data <- assay(vsd_data)
+mod  <- model.matrix(~ sampletype, colData(dds0))
+mod0 <- model.matrix(~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10, colData(dds0))
+
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    covariates = mod0, 
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds0),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>% 
+    left_join(., mdata)
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("QC", "results", "imgs", "SVA_10", "association_heatmap_corrected.png"),
+    res = 350, width = 9, height = 5.5, units = "in"
+)
+association_output$heatmap
+dev.off()
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_pca(
+        df = pca_plot_df,
+        x_variable = "PC1",
+        y_variable = "PC2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
+        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
+    )
+
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "SVA_10","PCA_all_covariates_PC1_PC2_corrected.png"),
+    dpi = 350,
+    width = 20,
+    height = 15,
+)
 
 ```
+
 
 However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
 https://support.bioconductor.org/p/9137741/
-```{r}
-
-
-dataset <- mdata[, c("pool", "batch1id", "oxldlset")] %>% sample_n(30)
-
-cont_table <- table(dataset$pool, dataset$batch1id, dataset$oxldlset)
-
-library(gmodels)
-mosaicplot(cont_table)
-
-
-mdata %>% group_by(pool, oxldlset) %>% tally
-
-
-
-diff(range(mdata$SV1))
-```
 
 
 
