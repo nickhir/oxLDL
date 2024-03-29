@@ -409,7 +409,12 @@ library(sva)
 # this runs very long. 
 mod  <- model.matrix(~ sampletype, colData(dds0))
 mod0 <- model.matrix(~1, colData(dds0))
-estimated_n_SVs = num.sv(norm_data, mod=mod, method= "be", B=30)
+
+
+# this returns 54 which is kind of is definitely way too many...
+#estimated_n_SVs = num.sv(norm_data, mod = mod, method = "be", B = 30)
+# this return 3 which seems too few...
+#estimated_n_SVs_leek = num.sv(norm_data, mod=mod, method= "leek")
 
 
 dds0 <- estimateSizeFactors(dds0)
@@ -424,6 +429,9 @@ mod0 <- model.matrix(~1, colData(dds0))
 #saveRDS(svseq, here("QC", "results", "sva_10SV.rds"))
 svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
 ```
+
+
+## **Try and find out what the SVs correspond to**
 
 ```{r}
 # try and find out what the SVs correspond to. For this we can use the same functions as above
@@ -472,6 +480,16 @@ for (x in covar_list) {
         height = 10,
     )
 }
+
+
+## ALSO CREATE A PC PLOT WHERE INSTEAD OF PLOTTING PCS WE PLOT SV1 and 2 AS THE AXIS -> SEE IF THIS BETTER
+## SEPARATES SHIT
+
+
+
+
+
+
 ```
 
 ## Batch corrected PCA 
@@ -493,9 +511,9 @@ colData(dds0) <- cbind(colData(dds0), SVs)
 norm_data <- assay(vsd_data)
 mod  <- model.matrix(~ sampletype, colData(dds0))
 mod0 <- model.matrix(
-    ~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 + SV11 + SV12 + SV13 + SV14 + SV15,
+    ~ SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 + SV11 + SV12 + SV13 + SV14 + SV15,
     colData(dds0)
-)
+)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
 
 
 adjusted_counts <- limma::removeBatchEffect(norm_data,
@@ -603,6 +621,8 @@ ggsave(
 )
 
 
+
+
 # DO CO OCCURANCE PLOTS 
 # DO ALSO PCA WHEN I REMOVE THE ACTUAL CONFOUNDERS WITHOUT ANY SURROGATES
 # maybe write a function which does all these plots? Will probably increase reability? 
@@ -624,16 +644,123 @@ keep_sampleids <- colData(dds0) %>%
     data.frame() %>%
     filter(!if_any(c(age, ethnicity, batch1id, pool, oxldlset), ~ . == "NA")) %>% pull(sampleid)
 
+dds_filtered <- dds0[, dds0$sampleid %in% keep_sampleids]
+
+# refactor the columns so NAs get removed
+factor_columns <- covars_to_adjust
+colData(dds_filtered)[factor_columns] <- lapply(colData(dds_filtered)[covars_to_adjust], factor)
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+norm_data <- assay(vst(dds_filtered, blind = TRUE))
+mod <- model.matrix(~sampletype, colData(dds_filtered))
 
 
+# if we include pool, or oxldl in the model matrix, we introduce linear dependency
+mod0 <- model.matrix(~ batch1id + ethnicity + age, colData(dds_filtered))[, -1]
+dim(mod0)
+qr(mod0)$rank
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    covariates = mod0, 
+    design = mod
+)
+ 
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds_filtered),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
 
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>% 
+    left_join(., mdata)
 
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
+    components = paste0("PC", 1:15)
+)
 
+png(here("QC", "results", "imgs", "mdata_adjustment", "association_heatmap_corrected.png"),
+    res = 350, width = 9, height = 5.5, units = "in"
+)
+association_output$heatmap
+dev.off()
 
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_pca(
+        df = pca_plot_df,
+        x_variable = "PC1",
+        y_variable = "PC2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
+        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
+    )
 
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "mdata_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
+    dpi = 350,
+    width = 20,
+    height = 15,
+)
 
+##############
+# UMAP PLOTS #
+##############
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_pca(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
 
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "mdata_adjustment","UMAP_all_covariates_corrected.png"),
+    dpi = 350,
+    width = 20,
+    height = 15,
+)
 ```
 
 
