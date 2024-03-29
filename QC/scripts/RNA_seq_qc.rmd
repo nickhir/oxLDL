@@ -274,33 +274,46 @@ dev.off()
 #############
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_pca(
-        df = pca_plot_df,
-        x_variable = "PC1",
-        y_variable = "PC2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
-        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
-    )
-
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
+PC_pairings <- lapply(1:7, function(x){
+    c(2*x-1,2*x)
 })
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "PCA_all_covariates_PC1_PC2.png"),
-    dpi = 350,
-    width = 20,
-    height = 15,
-)
+
+for (i in PC_pairings) {
+    print(str_interp("Working on PC${i[1]} and PC${i[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+        p <- density_pca(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${i[1]}"),
+            y_variable = str_interp("PC${i[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+        )
+
+
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "QC", "results", "imgs", "SVA_10",
+            str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}_corrected.png")
+        ),
+        dpi = 350,
+        width = 20,
+        height = 15,
+    )
+}
 
 ################
 # BOXPLOTS PCA #
@@ -500,18 +513,18 @@ This is drastically reduced when we increase the number of SVs. The exampled var
 
 ```{r}
 ################
-# USING 15 SVs #
+# USING 10 SVs #
 ################
-svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
+svseq <- readRDS(here("QC", "results", "sva_10SV.rds"))
 SVs <- svseq$sv
-colnames(SVs) <- paste0("SV",1:15)
+colnames(SVs) <- paste0("SV",1:10)
 colData(dds0) <- cbind(colData(dds0), SVs)
 
 # use limmas removeBatchEffects to emulate what the linear model will eventually do.
 norm_data <- assay(vsd_data)
 mod  <- model.matrix(~ sampletype, colData(dds0))
 mod0 <- model.matrix(
-    ~ SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 + SV11 + SV12 + SV13 + SV14 + SV15,
+    ~ SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10,
     colData(dds0)
 )[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
 
@@ -549,10 +562,10 @@ umap_plot_df <- umap_data$layout %>%
 association_output <- covar_correlation(
     df = pca_plot_df,
     covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
-    components = paste0("PC", 1:15)
+    components = paste0("PC", 1:10)
 )
 
-png(here("QC", "results", "imgs", "SVA_15", "association_heatmap_corrected.png"),
+png(here("QC", "results", "imgs", "SVA_10", "association_heatmap_corrected.png"),
     res = 350, width = 9, height = 5.5, units = "in"
 )
 association_output$heatmap
@@ -563,33 +576,47 @@ dev.off()
 #############
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_pca(
-        df = pca_plot_df,
-        x_variable = "PC1",
-        y_variable = "PC2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
-        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
-    )
-
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
+#create PC intervals 
+PC_pairings <- lapply(1:7, function(x){
+    c(2*x-1,2*x)
 })
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "SVA_15","PCA_all_covariates_PC1_PC2_corrected.png"),
-    dpi = 350,
-    width = 20,
-    height = 15,
-)
+
+for (i in PC_pairings) {
+    print(str_interp("Working on PC${i[1]} and PC${i[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+        p <- density_pca(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${i[1]}"),
+            y_variable = str_interp("PC${i[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+        )
+
+
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "QC", "results", "imgs", "SVA_10",
+            str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}_corrected.png")
+        ),
+        dpi = 350,
+        width = 20,
+        height = 15,
+    )
+}
 
 ##############
 # UMAP PLOTS #
@@ -614,14 +641,11 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "SVA_15","UMAP_all_covariates_corrected.png"),
+    filename = here("QC", "results", "imgs", "SVA_10","UMAP_all_covariates_corrected.png"),
     dpi = 350,
     width = 20,
     height = 15,
 )
-
-
-
 
 # DO CO OCCURANCE PLOTS 
 # DO ALSO PCA WHEN I REMOVE THE ACTUAL CONFOUNDERS WITHOUT ANY SURROGATES
