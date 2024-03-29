@@ -400,6 +400,18 @@ Internally first step of `svaseq` is log transformation so important that our no
 
 ```{r}
 library(sva)
+# sva package also provides a function to estimate the number of SVs we should use.
+# lets try the function:
+
+# the documentation for this function is sparse, but I think it expects log transformed counts
+# that were normalized with respect to library size
+# at least that is the data that is used in the example of the function so we will do the same. 
+# this runs very long. 
+mod  <- model.matrix(~ sampletype, colData(dds0))
+mod0 <- model.matrix(~1, colData(dds0))
+estimated_n_SVs = num.sv(norm_data, mod=mod, method= "be", B=30)
+
+
 dds0 <- estimateSizeFactors(dds0)
 norm_counts  <- counts(dds0, normalized = TRUE)
 
@@ -463,20 +475,28 @@ for (x in covar_list) {
 ```
 
 ## Batch corrected PCA 
+Seems to work very well. We do see separation of Macrophage subtypes now and oxLDL status, but this is also what we would expect 
+given that we specified that this is the comparison of interest. If we just use 10 SVs, we can still observe a clear clustering of variables according to batch. 
+This is drastically reduced when we increase the number of SVs. The exampled variance also goes down if we increase number of SVs.
+
 
 ```{r}
 ################
-# USING 10 SVs #
+# USING 15 SVs #
 ################
-svseq <- readRDS(here("QC", "results", "sva_10SV.rds"))
+svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
 SVs <- svseq$sv
-colnames(SVs) <- paste0("SV",1:10)
+colnames(SVs) <- paste0("SV",1:15)
 colData(dds0) <- cbind(colData(dds0), SVs)
 
 # use limmas removeBatchEffects to emulate what the linear model will eventually do.
 norm_data <- assay(vsd_data)
 mod  <- model.matrix(~ sampletype, colData(dds0))
-mod0 <- model.matrix(~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10, colData(dds0))
+mod0 <- model.matrix(
+    ~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 + SV11 + SV12 + SV13 + SV14 + SV15,
+    colData(dds0)
+)
+
 
 adjusted_counts <- limma::removeBatchEffect(norm_data,
     covariates = mod0, 
@@ -514,7 +534,7 @@ association_output <- covar_correlation(
     components = paste0("PC", 1:15)
 )
 
-png(here("QC", "results", "imgs", "SVA_10", "association_heatmap_corrected.png"),
+png(here("QC", "results", "imgs", "SVA_15", "association_heatmap_corrected.png"),
     res = 350, width = 9, height = 5.5, units = "in"
 )
 association_output$heatmap
@@ -547,7 +567,36 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "SVA_10","PCA_all_covariates_PC1_PC2_corrected.png"),
+    filename = here("QC", "results", "imgs", "SVA_15","PCA_all_covariates_PC1_PC2_corrected.png"),
+    dpi = 350,
+    width = 20,
+    height = 15,
+)
+
+##############
+# UMAP PLOTS #
+##############
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_pca(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "SVA_15","UMAP_all_covariates_corrected.png"),
     dpi = 350,
     width = 20,
     height = 15,
@@ -556,8 +605,43 @@ ggsave(
 
 # DO CO OCCURANCE PLOTS 
 # DO ALSO PCA WHEN I REMOVE THE ACTUAL CONFOUNDERS WITHOUT ANY SURROGATES
+# maybe write a function which does all these plots? Will probably increase reability? 
+```
+
+
+## **Batch correction using mdata**
+One very big downside of this method is, that all samples that have NA in any of the variables that are important
+for batch correction have to be dropped, because we simply do not to which group they belong.
+
+Nonetheless, try out how it looks like.
+
+```{r}
+# we will adjust for the following variables:
+covars_to_adjust <- c("age", "ethnicity", "batch1id", "pool", "oxldlset")
+
+# first we have to remove all samples from the dataset that have NA in any of the rows
+keep_sampleids <- colData(dds0) %>%
+    data.frame() %>%
+    filter(!if_any(c(age, ethnicity, batch1id, pool, oxldlset), ~ . == "NA")) %>% pull(sampleid)
+
+
+
+
+
+
+
+
+
+
 
 ```
+
+
+
+
+
+
+
 
 
 However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.

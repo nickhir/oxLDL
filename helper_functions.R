@@ -198,20 +198,36 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
 #' }
 density_pca <- function(
     df, x_variable, y_variable, color_by, xlab = waiver(), ylab = waiver(), shape_by = NA, colors = NA,
-    linewidth = 0.8, pt_size = 3, show_density = TRUE, density_plot_ratio = 0.3, alpha = 0.3) {
+    linewidth = 0.8, pt_size = 3, show_density = TRUE, density_plot_ratio = 0.3, alpha = 0.3, 
+    add_ellipse=FALSE) {
+
+    # determine the colors
     if (any(is.na(colors))) {
         colors = chameleon::distinct_colors(n_distinct(df[, color_by]))$name
     }
 
-    # determine the colors
+    # initialize ggplot object
     pmain <- ggplot(df, aes(!!sym(x_variable), !!sym(y_variable),
         color = !!sym(color_by),
-    )) +
-        geom_point(size = pt_size, alpha=0.9) +
+    ))
+    
+    # draw the ellipse first so that it is underneath the points
+    if (add_ellipse) {
+        pmain <- pmain + stat_ellipse(
+            geom = "polygon", aes(color = !!sym(color_by), fill = !!sym(color_by)), alpha = alpha-0.1,
+            level = 0.95
+        )
+    }
+
+    pmain <- pmain + geom_point(size = pt_size, alpha = 0.9) +
         xlab(xlab) +
         ylab(ylab) +
         theme_Publication() +
-        scale_color_manual(values = colors)
+        scale_color_manual(values = colors) +
+        scale_fill_manual(values = colors)
+    
+
+    
     
     if (!is.na(shape_by)) {
         pmain <- pmain + aes(shape = !!sym(shape_by))
