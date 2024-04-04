@@ -47,8 +47,6 @@ source(here("plot_theme.R"))
 source(here("helper_functions.R"))
 ```
 
-
-
 ```{r}
 plot_column_table <- function(input_vector, include_n=FALSE) {
   # Convert input vector to data frame
@@ -79,6 +77,7 @@ plot_column_table <- function(input_vector, include_n=FALSE) {
   return(plot)
 }
 ```
+
 ## **Description of metadata**
 Few observations: 
 (a) A few important confounders (e.g. `age`, `ethnicity`) are missing for some samples 
@@ -229,7 +228,7 @@ vsd_data <- vst(dds0)
 norm_data <- assay(vsd_data)
 ```
 
-
+## Create QC plots for uncorrected data
 
 ```{r}
 #################
@@ -283,7 +282,7 @@ for (i in PC_pairings) {
     plots <- lapply(columns_to_plot, function(x) {
         expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
         expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
-        p <- density_pca(
+        p <- density_scatter(
             df = pca_plot_df,
             x_variable = str_interp("PC${i[1]}"),
             y_variable = str_interp("PC${i[2]}"),
@@ -306,8 +305,7 @@ for (i in PC_pairings) {
     ggsave(
         plot = final_plot,
         filename = here(
-            "QC", "results", "imgs", "SVA_10",
-            str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}_corrected.png")
+            "QC", "results", "imgs", str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}.png")
         ),
         dpi = 350,
         width = 20,
@@ -348,7 +346,7 @@ ggsave(
 # UMAP PLOTS #
 ##############
 plots <- lapply(columns_to_plot, function(x) {
-    p <- density_pca(
+    p <- density_scatter(
         df = umap_plot_df,
         x_variable = "UMAP1",
         y_variable = "UMAP2",
@@ -402,6 +400,18 @@ ggsave(
 )
 ```
 
+### Remove some samples
+For PC1 and PC2 there are some huge outliers that drive the majority of variation in them. Identify them and try to see 
+why they behave so differently. Maybe remove them
+
+```{r}
+5+5
+
+
+
+```
+
+
 
 ## **Batch correction**
 
@@ -452,8 +462,10 @@ svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
 svseq <- readRDS(here("QC", "results", "sva_20SV.rds"))
 SVs <- svseq$sv
 colnames(SVs) <- paste0("SV",1:20)
-mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
-covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id")
+mdata <- cbind(mdata %>% select(-contains("SV"), "libsize"), data.frame(SVs))
+libsize <- colSums(counts(dds0)) %>% enframe(name="sampleid", value="libsize")
+mdata <- mdata %>% left_join(.,libsize, by="sampleid")
+covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
 correlation_SVs <- covar_correlation(
     df = mdata,
     covars = covar_list,
@@ -462,6 +474,8 @@ correlation_SVs <- covar_correlation(
 png(here("QC", "results", "imgs", "SVA_20", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
 correlation_SVs$heatmap
 dev.off()
+
+#plot_continuous_covar(mdata, "libsize", "SV1")
 
 # check for association
 for (x in covar_list) {
@@ -510,7 +524,7 @@ SV_pairings <- lapply(1:10, function(x) {
 for (i in SV_pairings) {
     print(str_interp("Working on SV${i[1]} and SV${i[2]}"))
     plots <- lapply(columns_to_plot, function(x) {
-        p <- density_pca(
+        p <- density_scatter(
             df = mdata,
             x_variable = str_interp("SV${i[1]}"),
             y_variable = str_interp("SV${i[2]}"),
@@ -545,7 +559,6 @@ for (i in SV_pairings) {
 Seems to work very well. We do see separation of Macrophage subtypes now and oxLDL status, but this is also what we would expect 
 given that we specified that this is the comparison of interest. If we just use 10 SVs, we can still observe a clear clustering of variables according to batch. 
 This is drastically reduced when we increase the number of SVs. The exampled variance also goes down if we increase number of SVs.
-
 
 ```{r}
 ################
@@ -622,7 +635,7 @@ for (i in PC_pairings) {
     plots <- lapply(columns_to_plot, function(x) {
         expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
         expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
-        p <- density_pca(
+        p <- density_scatter(
             df = pca_plot_df,
             x_variable = str_interp("PC${i[1]}"),
             y_variable = str_interp("PC${i[2]}"),
@@ -658,7 +671,7 @@ for (i in PC_pairings) {
 # UMAP PLOTS #
 ##############
 plots <- lapply(columns_to_plot, function(x) {
-    p <- density_pca(
+    p <- density_scatter(
         df = umap_plot_df,
         x_variable = "UMAP1",
         y_variable = "UMAP2",
@@ -689,7 +702,6 @@ ggsave(
 
 
 # DO CO OCCURANCE PLOTS 
-# DO ALSO PCA WHEN I REMOVE THE ACTUAL CONFOUNDERS WITHOUT ANY SURROGATES
 
 ```
 
@@ -771,7 +783,7 @@ dev.off()
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 
 plots <- lapply(columns_to_plot, function(x) {
-    p <- density_pca(
+    p <- density_scatter(
         df = pca_plot_df,
         x_variable = "PC1",
         y_variable = "PC2",
@@ -802,7 +814,7 @@ ggsave(
 # UMAP PLOTS #
 ##############
 plots <- lapply(columns_to_plot, function(x) {
-    p <- density_pca(
+    p <- density_scatter(
         df = umap_plot_df,
         x_variable = "UMAP1",
         y_variable = "UMAP2",

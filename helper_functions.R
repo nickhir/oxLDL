@@ -112,6 +112,7 @@ covar_correlation <- function(df, covars, components = c("PC1", "PC2", "PC3", "P
 
 plot_continuous_covar <- function(df, covar, PC, x_pos = "left",
                                   y_pos = "bottom") {
+    require(ggpubr)
     p <- ggscatter(df, x = PC, y = covar, add = "reg.line") +
         stat_cor(label.x.npc = x_pos, label.y.npc = y_pos) +
         xlab(paste(PC, ":", round(pca_data$variance[PC], 2), "% variance")) +
@@ -194,9 +195,9 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
 #' @examples
 #' \dontrun{
 #' data <- data.frame(x = rnorm(100), y = rnorm(100), condition = sample(c("A","B"), 100, replace=T))
-#' density_pca(data, "x", "y", "condition")
+#' density_scatter(data, "x", "y", "condition")
 #' }
-density_pca <- function(
+density_scatter <- function(
     df, x_variable, y_variable, color_by, xlab = waiver(), ylab = waiver(), shape_by = NA, colors = NA,
     linewidth = 0.8, pt_size = 3, show_density = TRUE, density_plot_ratio = 0.3, alpha = 0.3, 
     add_ellipse=FALSE) {
