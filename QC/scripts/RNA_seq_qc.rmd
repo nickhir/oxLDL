@@ -402,15 +402,93 @@ ggsave(
 
 ### Remove some samples
 For PC1 and PC2 there are some huge outliers that drive the majority of variation in them. Identify them and try to see 
-why they behave so differently. Maybe remove them
+why they behave so differently. Maybe remove them.
+The outliers have PC1 > 100 and PC2 < -100
 
 ```{r}
-5+5
+library(plotly)
 
+# hover over the points to figure out what the outliers are
+# plot_ly(data = pca_plot_df, x = ~PC1, y = ~PC2, text = ~sample_id, mode = "markers")
+outlier_samples <- pca_plot_df %>%
+    filter(PC1 > 100) %>%
+    filter(PC2 < -100) %>%
+    pull(sample_id)
+
+outlier_lines <- mdata %>% filter(sampleid %in% outlier_samples) %>% pull(line) %>% sort()
+
+
+
+## get the cell lines that have technical replicates
+technical_replicates_lines <- mdata %>%
+    group_by(line) %>%
+    mutate(n = n()) %>%
+    filter(n > 6) %>%
+    pull(line) %>%
+    unique() %>% 
+    sort()
+
+# unfortunately no overlap
+outlier_lines  %in% technical_replicates_lines
+
+########### 
+# libsize #
+###########
+low_libsize <- mdata %>% slice_min(., order_by = libsize, n=7) %>% pull(sampleid)
+
+# all have extremely low library size
+all(outlier_samples %in% low_libsize)
+
+libsizes <- sort(mdata$libsize)
+ratios <- libsizes[-1] / libsizes[-length(libsizes)]
+plot(ratios)
+
+# Create a data frame for plotting
+df <- data.frame(index = 1:(length(libsizes)-1), ratio = ratios)
+
+# Plot the ratios
+ggplot(df, aes(x = index, y = ratio)) +
+    geom_point() +
+    labs(x = "Index", y = "(n+1)/n Ratio") +
+    ggtitle("Ratios of (n+1)/n for sorted library size") +
+    theme_Publication()
+
+# subset
+mdata_small_lib <- mdata %>%
+    slice_min(., order_by = libsize, n = 100) %>%
+    arrange(libsize) %>%
+    mutate(sorted_index = row_number())
+
+ggplot(
+    mdata_small_lib, aes(x = sorted_index, y = libsize)) +
+    geom_bar(stat = "identity") +
+    labs(x = "Sorted library size index", y = "Library Size") +
+    theme_Publication() +
+    scale_y_continuous(expand = c(0.01,0))
+
+# just out of interest, also show where the sample with the huge library size falls
+
+ggplot(pca_plot_df, aes(PC1, PC2)) +
+    geom_point() +
+    geom_point(data = pca_plot_df %>% filter(sample_id == "MM_oxLDL8032568"),
+        aes(PC1, PC2, color=sample_id), inherit.aes = FALSE) +
+    theme_Publication()
+
+
+ggplot(pca_plot_df, aes(PC1, PC2)) +
+    geom_point() +
+    geom_point(data = pca_plot_df %>% filter(sample_id %in% low_libsize),
+        aes(PC1, PC2, color=sample_id), inherit.aes = FALSE) +
+    theme_Publication()
+```
+
+
+## Remove outliers and rerun PCA/UMAP
+
+```{r}
 
 
 ```
-
 
 
 ## **Batch correction**
