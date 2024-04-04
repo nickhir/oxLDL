@@ -40,8 +40,7 @@ library(sva)
 library(RUVSeq)
 library(httpgd)
 library(tidyverse)
-library(foreach)
-library(doParallel)
+
 
 library(here)
 source(here("plot_theme.R"))
@@ -77,10 +76,10 @@ mod0 <- model.matrix(~1, colData(dds))
 dds <- estimateSizeFactors(dds)
 norm_counts  <- counts(dds, normalized = TRUE)
 
-dummy_ <- parallel::mclapply(10:20, function(i) {
-    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-    saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
-}, mc.cores=20)
+# dummy_ <- parallel::mclapply(10:20, function(i) {
+#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+#     saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
+# }, mc.cores=20)
 ```
 
 
@@ -90,7 +89,8 @@ Big difference is that none of the SVs is associated with our conditions of inte
 ```{r}
 mdata <- colData(dds) %>% data.frame()
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
-for (i in 10:20) {
+
+for(i in 10:20){
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
     svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
     SVs <- svseq$sv
@@ -190,7 +190,6 @@ for (i in 10:20) {
 
 
 ### Use SVs to correct the count data
-
 ```{r}
 vsd_data <- vst(dds, blind=TRUE)
 for (i in 10:20) {
@@ -324,4 +323,307 @@ for (i in 10:20) {
         height = 15,
     )
 }
+```
+
+
+
+## **Batch correction using mdata**
+One very big downside of this method is, that all samples that have NA in any of the variables that are important
+for batch correction have to be dropped, because we simply do not to which group they belong.
+
+Nonetheless, try out how it looks like.
+```{r}
+# we will adjust for the following variables:
+covars_to_adjust <- c("age", "ethnicity", "batch1id", "pool", "oxldlset")
+# first we have to remove all samples from the dataset that have NA in any of the rows
+keep_sampleids <- colData(dds) %>%
+    data.frame() %>%
+    filter(!if_any(c(age, ethnicity, batch1id, pool, oxldlset), ~ . == "NA")) %>% pull(sampleid)
+
+dds_filtered <- dds[, dds$sampleid %in% keep_sampleids]
+
+# refactor the columns so NAs get removed
+factor_columns <- covars_to_adjust
+colData(dds_filtered)[factor_columns] <- lapply(colData(dds_filtered)[covars_to_adjust], factor)
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+norm_data <- assay(vst(dds_filtered, blind = TRUE))
+mod <- model.matrix(~sampletype, colData(dds_filtered))
+
+# if we include pool, or oxldl in the model matrix, we introduce linear dependency
+mod0 <- model.matrix(~ batch1id + ethnicity + age, colData(dds_filtered))[, -1]
+dim(mod0)
+qr(mod0)$rank # -> is full rank
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    covariates = mod0, 
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds_filtered),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>% 
+    left_join(., mdata)
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("QC", "results", "imgs", "mdata_adjustment", "association_heatmap_corrected.png"),
+    res = 300, width = 9, height = 5.5, units = "in"
+)
+association_output$heatmap
+dev.off()
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = pca_plot_df,
+        x_variable = "PC1",
+        y_variable = "PC2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
+        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
+    )
+
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "mdata_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
+    dpi = 300,
+    width = 20,
+    height = 15,
+)
+
+##############
+# UMAP PLOTS #
+##############
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "mdata_adjustment","UMAP_all_covariates_corrected.png"),
+    dpi = 300,
+    width = 20,
+    height = 15,
+)
+```
+
+
+## **Batch correction using PCs**
+Out of interest, I also want to check what happens if we simply use the PCs instead of SVs.
+I think in that case we remove more biologically relevant information, because the conditions of interest
+are associated with the PCs but not with the SVs.
+
+Actually looks very good aswell. However, we remove alot of variation from the dataset... the PCs now only explain a small percentage 
+of the overall variation. 
+
+```{r}
+# recalculate the "original" PCA
+norm_data <- assay(vst(dds, blind = TRUE))
+dim(norm_data)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+PCs <- pca_data$rotated[,1:15]
+colnames(PCs) <- paste0("PC", 1:15)
+tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("PCs")), PCs)
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+mod <- model.matrix(~sampletype, tmp_mdata)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("PC", 1:15, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    covariates = mod0,
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>% 
+    left_join(., mdata)
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("QC", "results", "imgs", "PC_adjustment", "association_heatmap_corrected.png"),
+    res = 300, width = 9, height = 5.5, units = "in"
+)
+association_output$heatmap
+dev.off()
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = pca_plot_df,
+        x_variable = "PC1",
+        y_variable = "PC2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
+        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
+    )
+
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "PC_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
+    dpi = 300,
+    width = 20,
+    height = 15,
+)
+
+##############
+# UMAP PLOTS #
+##############
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "PC_adjustment","UMAP_all_covariates_corrected.png"),
+    dpi = 300,
+    width = 20,
+    height = 15,
+)
+```
+
+
+## **RUVseq**
+We will use empirical control genes to adjust batches.
+
+However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
+https://support.bioconductor.org/p/9137741/
+
+```{r}
+# first pass differential expression to determine the empirical contorl genes, i.e. the genes that do not change
+dds0 <- DESeqDataSetFromMatrix(
+    counts(dds, normalize=FALSE),
+    colData(dds),
+    ~ sampletype
+)
+init_deseq_res <- DESeq(dds0)
+
+# we are actually interested in a wide range of comparisons:
+# we want to know difference between the different macrophage subtype of the same condition and
+# also differnces of the same macrophage subtype
+
+design <- model.matrix(~ 0 + sampletype, mdata)
+colnames(design) <- str_remove_all(colnames(design), "sampletype")
+contrasts <- limma::makeContrasts(
+    M0_comp = M0_oxLDL - M0_0,
+    levels = design
+)
+
+
+
+
+
+
 ```
