@@ -438,8 +438,8 @@ mod0 <- model.matrix(~1, colData(dds0))
 
 # important: The number of SVs matters.
 # I.e. if you try 2 runs with 10 or 15, the first 10 of the run with 15 wont be the same as the other run.
-#svseq <- svaseq(norm_counts, mod, mod0, n.sv = 10)
-#saveRDS(svseq, here("QC", "results", "sva_10SV.rds"))
+#svseq <- svaseq(norm_counts, mod, mod0, n.sv = 20)
+#saveRDS(svseq, here("QC", "results", "sva_20SV.rds"))
 svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
 ```
 
@@ -449,16 +449,17 @@ svseq <- readRDS(here("QC", "results", "sva_15SV.rds"))
 ```{r}
 # try and find out what the SVs correspond to. For this we can use the same functions as above
 # I assume that the order in svseq does not change, because that would just be random
+svseq <- readRDS(here("QC", "results", "sva_20SV.rds"))
 SVs <- svseq$sv
-colnames(SVs) <- paste0("SV",1:15)
+colnames(SVs) <- paste0("SV",1:20)
 mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
 covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id")
 correlation_SVs <- covar_correlation(
     df = mdata,
     covars = covar_list,
-    components =paste0("SV",1:15)
+    components =paste0("SV",1:20)
 )
-png(here("QC", "results", "imgs", "SVA_15", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
+png(here("QC", "results", "imgs", "SVA_20", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
 correlation_SVs$heatmap
 dev.off()
 
@@ -468,7 +469,7 @@ for (x in covar_list) {
     p <- plot_categorical_covar(
         df = mdata,
         covar = x,
-        PC = paste0("SV", 1:15),
+        PC = paste0("SV", 1:20),
         bonferroni_correction = TRUE
     )
     p <- lapply(p, function(k) {
@@ -487,7 +488,7 @@ for (x in covar_list) {
         )
     ggsave(
         plot = p,
-        filename = here("QC", "results", "imgs", "SVA_15", str_interp("SV_associations_${x}.png")),
+        filename = here("QC", "results", "imgs", "SVA_20", str_interp("SV_associations_${x}.png")),
         dpi = 350,
         width = 15,
         height = 10,
@@ -495,14 +496,49 @@ for (x in covar_list) {
 }
 
 
-## ALSO CREATE A PC PLOT WHERE INSTEAD OF PLOTTING PCS WE PLOT SV1 and 2 AS THE AXIS -> SEE IF THIS BETTER
-## SEPARATES SHIT
+
+############
+# SV PLOTS #
+############
+# Similar to PCA, but we plot SVs now on the axis, see if this improves seperation of batches
+
+# create PC intervals
+SV_pairings <- lapply(1:10, function(x) {
+    c(2 * x - 1, 2 * x)
+})
+
+for (i in SV_pairings) {
+    print(str_interp("Working on SV${i[1]} and SV${i[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_pca(
+            df = mdata,
+            x_variable = str_interp("SV${i[1]}"),
+            y_variable = str_interp("SV${i[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2
+        )
 
 
-
-
-
-
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "QC", "results", "imgs", "SVA_20",
+            str_interp("SVA_all_covariates_SV${i[1]}_SV${i[2]}_corrected.png")
+        ),
+        dpi = 350,
+        width = 20,
+        height = 15,
+    )
+}
 ```
 
 ## Batch corrected PCA 
@@ -515,16 +551,16 @@ This is drastically reduced when we increase the number of SVs. The exampled var
 ################
 # USING 10 SVs #
 ################
-svseq <- readRDS(here("QC", "results", "sva_10SV.rds"))
+svseq <- readRDS(here("QC", "results", "sva_20SV.rds"))
 SVs <- svseq$sv
-colnames(SVs) <- paste0("SV",1:10)
+colnames(SVs) <- paste0("SV",1:20)
 colData(dds0) <- cbind(colData(dds0), SVs)
 
 # use limmas removeBatchEffects to emulate what the linear model will eventually do.
 norm_data <- assay(vsd_data)
 mod  <- model.matrix(~ sampletype, colData(dds0))
 mod0 <- model.matrix(
-    ~ SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10,
+    ~ SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 + SV11 + SV12 + SV13 + SV14 + SV15 + SV16 + SV17 + SV18 + SV19 + SV20,
     colData(dds0)
 )[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
 
@@ -562,10 +598,10 @@ umap_plot_df <- umap_data$layout %>%
 association_output <- covar_correlation(
     df = pca_plot_df,
     covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
-    components = paste0("PC", 1:10)
+    components = paste0("PC", 1:15)
 )
 
-png(here("QC", "results", "imgs", "SVA_10", "association_heatmap_corrected.png"),
+png(here("QC", "results", "imgs", "SVA_20", "association_heatmap_corrected.png"),
     res = 350, width = 9, height = 5.5, units = "in"
 )
 association_output$heatmap
@@ -609,7 +645,7 @@ for (i in PC_pairings) {
     ggsave(
         plot = final_plot,
         filename = here(
-            "QC", "results", "imgs", "SVA_10",
+            "QC", "results", "imgs", "SVA_20",
             str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}_corrected.png")
         ),
         dpi = 350,
@@ -641,15 +677,20 @@ plots <- lapply(columns_to_plot, function(x) {
 final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
-    filename = here("QC", "results", "imgs", "SVA_10","UMAP_all_covariates_corrected.png"),
+    filename = here("QC", "results", "imgs", "SVA_20","UMAP_all_covariates_corrected.png"),
     dpi = 350,
     width = 20,
     height = 15,
 )
 
+# some batches cluster strongly in the UMAP.
+# this also seems to be the case for PC7 and PC8 for both 10 or 15 SVs
+
+
+
 # DO CO OCCURANCE PLOTS 
 # DO ALSO PCA WHEN I REMOVE THE ACTUAL CONFOUNDERS WITHOUT ANY SURROGATES
-# maybe write a function which does all these plots? Will probably increase reability? 
+
 ```
 
 
@@ -785,6 +826,9 @@ ggsave(
     width = 20,
     height = 15,
 )
+
+
+
 ```
 
 

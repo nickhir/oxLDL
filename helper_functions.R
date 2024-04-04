@@ -207,7 +207,7 @@ density_pca <- function(
     }
 
     # initialize ggplot object
-    pmain <- ggplot(df, aes(!!sym(x_variable), !!sym(y_variable),
+    pmain <- ggplot(df %>% sample_frac(1), aes(!!sym(x_variable), !!sym(y_variable),
         color = !!sym(color_by),
     ))
     
