@@ -1,0 +1,327 @@
+---
+title: "RNA seq batch correction"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 300
+)
+```
+
+## **Introduction**
+We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
+In this script, we will try out and evaluate different methods to correct for that. 
+
+```{r, load libraries}
+library(DESeq2)
+library(magrittr)
+library(PCAtools)
+library(umap)
+library(patchwork)
+library(sva)
+library(RUVSeq)
+library(httpgd)
+library(tidyverse)
+library(foreach)
+library(doParallel)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **SVA**
+First, we test [sva](https://bioconductor.org/packages/release/bioc/html/sva.html). 
+`svaseq` expects normalized input data. Otherwise the first surrogate variable is often the lirbary size.
+See [Jeff Leeks reply](https://support.bioconductor.org/p/76381/). We take normalized DESeq2 counts.
+Internally first step of `svaseq` is log transformation so important that our normalized counts are not log transformed.
+
+```{r calculate SVs}
+# load in DESeq2dataset where the libsize outliers are already removed.
+# for creation see script **01_initial_QC.rmd**
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+
+
+# sva package also provides a function to estimate the number of SVs we should use.
+# lets try the function:
+# the documentation for this function is sparse, but I think it expects log transformed counts
+# that were normalized with respect to library size -> vst transformed data
+# at least that is the data that is used in the example of the function so we will do the same. 
+# this runs very long. 
+mod  <- model.matrix(~ sampletype, colData(dds))
+mod0 <- model.matrix(~1, colData(dds))
+# this returns 54 which is kind of is definitely way too many...
+#estimated_n_SVs = num.sv(norm_data, mod = mod, method = "be", B = 30)
+# this return 3 which seems too few...
+#estimated_n_SVs_leek = num.sv(norm_data, mod=mod, method= "leek")
+
+dds <- estimateSizeFactors(dds)
+norm_counts  <- counts(dds, normalized = TRUE)
+
+dummy_ <- parallel::mclapply(10:20, function(i) {
+    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+    saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
+}, mc.cores=20)
+```
+
+
+### **Try and find out what the SVs correspond to**
+Still difficult to exactly determine what SV1 corresponds to. SV2 very clearly batch, but that was already the case for the PCA.
+Big difference is that none of the SVs is associated with our conditions of interest which is good.
+```{r}
+mdata <- colData(dds) %>% data.frame()
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+for (i in 10:20) {
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
+    SVs <- svseq$sv
+    colnames(SVs) <- paste0("SV", 1:i)
+    mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
+
+    ###########
+    # HEATMAP #
+    ###########
+    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    correlation_SVs <- covar_correlation(
+        df = mdata,
+        covars = covar_list,
+        components = paste0("SV", 1:i)
+    )
+    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap.png"), res = 300, width = 9, height = 5.5, units = "in")
+    correlation_SVs$heatmap
+    dev.off()
+
+    ############
+    # BOXPLOTS #
+    ############
+    # check for association
+    for (x in columns_to_plot) {
+        print(x)
+        p <- plot_categorical_covar(
+            df = mdata,
+            covar = x,
+            PC = paste0("SV", 1:i),
+            bonferroni_correction = TRUE
+        )
+        p <- lapply(p, function(k) {
+            k <- k + geom_hline(yintercept = 0, linetype = "dashed")
+        })
+
+        p <- p %>% wrap_plots(., ncol = 5) &
+            theme(
+                axis.text.x = element_blank(),
+                axis.text.y = element_text(size = 5, face = "bold")
+            )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        ggsave(
+            plot = p,
+            filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), str_interp("SV_associations_${x}.png")),
+            dpi = 300,
+            width = 15,
+            height = 10,
+        )
+    }
+
+    ############
+    # SV PLOTS #
+    ############
+    # similar to PC plots but with SV on the axis. See if this improves seperation of batches
+    SV_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in SV_pairings) {
+        print(str_interp("Working on SV${k[1]} and SV${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            p <- density_scatter(
+                df = mdata,
+                x_variable = str_interp("SV${k[1]}"),
+                y_variable = str_interp("SV${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2
+            )
+
+
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("SVA_${i}"),
+                str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
+            ),
+            dpi = 300,
+            width = 20,
+            height = 15,
+        )
+    }
+}
+```
+
+
+### Use SVs to correct the count data
+
+```{r}
+vsd_data <- vst(dds, blind=TRUE)
+for (i in 10:20) {
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
+    SVs <- svseq$sv
+    colnames(SVs) <- paste0("SV", 1:i)
+    tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+    # use limmas removeBatchEffects to emulate what the linear model will eventually do.
+    norm_data <- assay(vsd_data)
+    mod <- model.matrix(~sampletype, tmp_mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("SV", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+    pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+    for (k in 1:20) {
+        pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+    }
+
+    ##################
+    # CALCULATE UMAP #
+    ##################
+    umap_data <- umap(t(adjusted_counts))
+    umap_plot_df <- umap_data$layout %>%
+        data.frame() %>%
+        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+        rownames_to_column("sampleid") %>%
+        left_join(., mdata)
+
+
+    ###########
+    # HEATMAP #
+    ###########
+    association_output <- covar_correlation(
+        df = pca_plot_df,
+        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        components = paste0("PC", 1:15)
+    )
+
+    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap_corrected.png"),
+        res = 300, width = 9, height = 5.5, units = "in"
+    )
+    association_output$heatmap
+    dev.off()
+
+    #############
+    # PCA PLOTS #
+    #############
+    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+    # create PC intervals
+    PC_pairings <- lapply(1:floor(i/2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in PC_pairings) {
+        print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+            expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+            p <- density_scatter(
+                df = pca_plot_df,
+                x_variable = str_interp("PC${k[1]}"),
+                y_variable = str_interp("PC${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2,
+                xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+                ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+            )
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("SVA_${i}"),
+                str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
+            ),
+            dpi = 300,
+            width = 20,
+            height = 15,
+        )
+    }
+
+    ##############
+    # UMAP PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs",str_interp("SVA_${i}"), "UMAP_all_covariates_corrected.png"),
+        dpi = 300,
+        width = 20,
+        height = 15,
+    )
+}
+```
