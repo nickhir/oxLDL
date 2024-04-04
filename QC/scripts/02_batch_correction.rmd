@@ -606,7 +606,7 @@ https://support.bioconductor.org/p/9137741/
 dds0 <- DESeqDataSetFromMatrix(
     counts(dds, normalize=FALSE),
     colData(dds),
-    ~ sampletype
+    ~ 0 + sampletype
 )
 init_deseq_res <- DESeq(dds0)
 
@@ -616,14 +616,33 @@ init_deseq_res <- DESeq(dds0)
 
 design <- model.matrix(~ 0 + sampletype, mdata)
 colnames(design) <- str_remove_all(colnames(design), "sampletype")
+
 contrasts <- limma::makeContrasts(
     M0_comp = M0_oxLDL - M0_0,
+    M1_comp = M1_oxLDL - M1_0,
+    M2_comp = M2_oxLDL - M2_0,
+    stim_comp = (M0_oxLDL + M1_oxLDL + M2_oxLDL)/3 - (M0_0 + M1_0 + M2_0)/3,
+    M1vsM0_oxLDL = M1_oxLDL - M0_oxLDL, 
+    M2vsM0_oxLDL = M2_oxLDL - M0_oxLDL, 
+    M2vsM1_oxLDL = M2_oxLDL - M1_oxLDL, 
+    M1vsM0_ctrl = M1_0 - M0_0, 
+    M2vsM0_ctrl = M2_0 - M0_0, 
+    M2vsM1_ctrl = M2_0 - M1_0, 
     levels = design
 )
 
 
+5+5
 
 
+
+
+
+
+results(init_deseq_res, contrast = contrasts)
+
+
+resultsNames(init_deseq_res)
 
 
 ```
