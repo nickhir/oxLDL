@@ -614,35 +614,62 @@ init_deseq_res <- DESeq(dds0)
 # we want to know difference between the different macrophage subtype of the same condition and
 # also differnces of the same macrophage subtype
 
-design <- model.matrix(~ 0 + sampletype, mdata)
-colnames(design) <- str_remove_all(colnames(design), "sampletype")
-
+design <- model.matrix(~ 0 + sampletype, colData(dds0))
+#colnames(design) <- str_remove_all(colnames(design), "sampletype")
 contrasts <- limma::makeContrasts(
-    M0_comp = M0_oxLDL - M0_0,
-    M1_comp = M1_oxLDL - M1_0,
-    M2_comp = M2_oxLDL - M2_0,
-    stim_comp = (M0_oxLDL + M1_oxLDL + M2_oxLDL)/3 - (M0_0 + M1_0 + M2_0)/3,
-    M1vsM0_oxLDL = M1_oxLDL - M0_oxLDL, 
-    M2vsM0_oxLDL = M2_oxLDL - M0_oxLDL, 
-    M2vsM1_oxLDL = M2_oxLDL - M1_oxLDL, 
-    M1vsM0_ctrl = M1_0 - M0_0, 
-    M2vsM0_ctrl = M2_0 - M0_0, 
-    M2vsM1_ctrl = M2_0 - M1_0, 
+    M0_comp = sampletypeM0_oxLDL - sampletypeM0_0,
+    M1_comp = sampletypeM1_oxLDL - sampletypeM1_0,
+    M2_comp = sampletypeM2_oxLDL - sampletypeM2_0,
+    M1vsM0_oxLDL = sampletypeM1_oxLDL - sampletypeM0_oxLDL, 
+    M2vsM0_oxLDL = sampletypeM2_oxLDL - sampletypeM0_oxLDL, 
+    M2vsM1_oxLDL = sampletypeM2_oxLDL - sampletypeM1_oxLDL, 
+    M1vsM0_ctrl = sampletypeM1_0 - sampletypeM0_0, 
+    M2vsM0_ctrl = sampletypeM2_0 - sampletypeM0_0, 
+    M2vsM1_ctrl = sampletypeM2_0 - sampletypeM1_0, 
+    treat_eff_M1_vs_M0 = (sampletypeM1_oxLDL - sampletypeM1_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
+    treat_eff_M2_vs_M0 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
+    treat_eff_M2_vs_M1 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM1_oxLDL - sampletypeM1_0),
+    stim_comp = (sampletypeM0_oxLDL + sampletypeM1_oxLDL + sampletypeM2_oxLDL)/3 - (sampletypeM0_0 + sampletypeM1_0 + sampletypeM2_0)/3,
     levels = design
 )
 
+# it is absolutely crucial, that the order of the "Levels" in contrast, is exactly the same as the 
+# output of resultsNames(init_deseq_res), otherwise comparisons are wrong.
+rownames(contrasts) == resultsNames(init_deseq_res)
+# a few sanity checks
+M2_comp_res <- results(init_deseq_res, contrast = contrasts[,3])
+M2_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_oxLDL", "M2_0"))
+identical(data.frame(M2_comp_res), data.frame(M2_comp_res_conventional))
 
-5+5
+M0_comp_res <- results(init_deseq_res, contrast = contrasts[,1])
+M0_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M0_oxLDL", "M0_0"))
+identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
+
+M2_M1_comp_res <- results(init_deseq_res, contrast = contrasts[,9])
+M2_M1_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_0", "M1_0"))
+identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
+
+deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
+    data.frame(results(init_deseq_res, contrast = contrasts[, i]))
+}, mc.cores=15)
+
+names(deseq_results) <- colnames(contrasts)
+all(deseq_results$M0_comp == data.frame(M0_comp_res_conventional))
+all(deseq_results$M2vsM1_ctrl == data.frame(M2_M1_comp_res_conventional))
+all(deseq_results$M2_comp == data.frame(M2_comp_res_conventional))
+
+# extract all genes with a p value > 0.3.
+# We want to get a few hundred genes
+not_sig <- lapply(deseq_results, function(x){
+    x %>% filter(padj>0.3) %>% rownames()
+}) %>% Reduce(intersect, .)
+
+# check the average expression of these.
+avg_expr <- counts(dds, normalized = TRUE)[not_sig,] %>% rowMeans()
+hist(avg_expr)
 
 
 
-
-
-
-results(init_deseq_res, contrast = contrasts)
-
-
-resultsNames(init_deseq_res)
 
 
 ```
