@@ -37,10 +37,10 @@ library(PCAtools)
 library(umap)
 library(patchwork)
 library(sva)
+library(clusterProfiler)
 library(RUVSeq)
 library(httpgd)
 library(tidyverse)
-
 
 library(here)
 source(here("plot_theme.R"))
@@ -192,6 +192,13 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 
 ### Use SVs to correct the count data
 ```{r}
+# this is needed for the enrichment analysis that we are doing.
+hs_msigdb_df <- msigdbr::msigdbr(species = "Homo sapiens")
+
+gene_sets <- hs_msigdb_df %>%
+    filter(gs_subcat == "GO:BP" | gs_cat == "H" | gs_subcat == "CP:KEGG") %>%
+    select(gs_name, gene_symbol)
+
 vsd_data <- vst(dds, blind=TRUE)
 dummy_ <- parallel::mclapply(5:20, function(i){
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
@@ -217,6 +224,29 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         metadata = colData(dds),
         removeVar = 0.4
     )
+
+    # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
+
+    
+    for (z in 1:2) {
+        # extract top 300 genes which most influence PC
+        top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
+
+        enrichment_result <- enricher(
+            gene = top_loadings_gene_names,
+            universe = rownames(dds),
+            minGSSize = 5,
+            maxGSSize = 300,
+            TERM2GENE = gene_sets
+        )
+
+        enrichment_result@result %>% data.frame() %>% filter(grepl("HALLMARK", ID)) %>% arrange(p.adjust) %>% head()
+
+    }
+    
+    
+
+
     pca_plot_df <- pca_data$rotated[, 1:20] %>%
         rownames_to_column("sample_id") %>%
         left_join(., mdata, by = c("sample_id" = "sampleid"))
@@ -926,3 +956,17 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     )
 }, mc.cores = 10)
 ```
+
+
+
+### Conclusion
+
+
+
+```{r}
+sessionInfo()
+```
+
+
+
+
