@@ -22,7 +22,7 @@ editor_options:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
     echo = T, warning = F, error = F, message = F,
-    fig.align = "center", cache = F, dpi = 300
+    fig.align = "center", cache = F, dpi = 150
 )
 ```
 
@@ -76,10 +76,10 @@ mod0 <- model.matrix(~1, colData(dds))
 dds <- estimateSizeFactors(dds)
 norm_counts  <- counts(dds, normalized = TRUE)
 
-# dummy_ <- parallel::mclapply(10:20, function(i) {
-#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-#     saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
-# }, mc.cores=20)
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+    saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
+}, mc.cores=5)
 ```
 
 
@@ -90,7 +90,7 @@ Big difference is that none of the SVs is associated with our conditions of inte
 mdata <- colData(dds) %>% data.frame()
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 
-for(i in 10:20){
+for(i in 5:20){
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
     svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
     SVs <- svseq$sv
@@ -106,7 +106,7 @@ for(i in 10:20){
         covars = covar_list,
         components = paste0("SV", 1:i)
     )
-    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap.png"), res = 300, width = 9, height = 5.5, units = "in")
+    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
     correlation_SVs$heatmap
     dev.off()
 
@@ -139,7 +139,7 @@ for(i in 10:20){
         ggsave(
             plot = p,
             filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), str_interp("SV_associations_${x}.png")),
-            dpi = 300,
+            dpi = 150,
             width = 15,
             height = 10,
         )
@@ -180,7 +180,7 @@ for(i in 10:20){
                 "QC", "results", "imgs", str_interp("SVA_${i}"),
                 str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
             ),
-            dpi = 300,
+            dpi = 150,
             width = 20,
             height = 15,
         )
@@ -192,7 +192,7 @@ for(i in 10:20){
 ### Use SVs to correct the count data
 ```{r}
 vsd_data <- vst(dds, blind=TRUE)
-for (i in 10:20) {
+for (i in 5:20) {
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
     svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
     SVs <- svseq$sv
@@ -244,7 +244,7 @@ for (i in 10:20) {
     )
 
     png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap_corrected.png"),
-        res = 300, width = 9, height = 5.5, units = "in"
+        res = 150, width = 9, height = 5.5, units = "in"
     )
     association_output$heatmap
     dev.off()
@@ -288,7 +288,7 @@ for (i in 10:20) {
                 "QC", "results", "imgs", str_interp("SVA_${i}"),
                 str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
-            dpi = 300,
+            dpi = 150,
             width = 20,
             height = 15,
         )
@@ -318,7 +318,7 @@ for (i in 10:20) {
     ggsave(
         plot = final_plot,
         filename = here("QC", "results", "imgs",str_interp("SVA_${i}"), "UMAP_all_covariates_corrected.png"),
-        dpi = 300,
+        dpi = 150,
         width = 20,
         height = 15,
     )
@@ -391,7 +391,7 @@ association_output <- covar_correlation(
 )
 
 png(here("QC", "results", "imgs", "mdata_adjustment", "association_heatmap_corrected.png"),
-    res = 300, width = 9, height = 5.5, units = "in"
+    res = 150, width = 9, height = 5.5, units = "in"
 )
 association_output$heatmap
 dev.off()
@@ -424,7 +424,7 @@ final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
     filename = here("QC", "results", "imgs", "mdata_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
-    dpi = 300,
+    dpi = 150,
     width = 20,
     height = 15,
 )
@@ -453,7 +453,7 @@ final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
     filename = here("QC", "results", "imgs", "mdata_adjustment","UMAP_all_covariates_corrected.png"),
-    dpi = 300,
+    dpi = 150,
     width = 20,
     height = 15,
 )
@@ -526,7 +526,7 @@ association_output <- covar_correlation(
 )
 
 png(here("QC", "results", "imgs", "PC_adjustment", "association_heatmap_corrected.png"),
-    res = 300, width = 9, height = 5.5, units = "in"
+    res = 150, width = 9, height = 5.5, units = "in"
 )
 association_output$heatmap
 dev.off()
@@ -559,7 +559,7 @@ final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
     filename = here("QC", "results", "imgs", "PC_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
-    dpi = 300,
+    dpi = 150,
     width = 20,
     height = 15,
 )
@@ -588,7 +588,7 @@ final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
 ggsave(
     plot = final_plot,
     filename = here("QC", "results", "imgs", "PC_adjustment","UMAP_all_covariates_corrected.png"),
-    dpi = 300,
+    dpi = 150,
     width = 20,
     height = 15,
 )
@@ -665,11 +665,265 @@ not_sig <- lapply(deseq_results, function(x){
 }) %>% Reduce(intersect, .)
 
 # check the average expression of these.
-avg_expr <- counts(dds, normalized = TRUE)[not_sig,] %>% rowMeans()
-hist(avg_expr)
+avg_expr_not_sig <- counts(dds, normalized = TRUE)[not_sig, ] %>% rowMeans()
+avg_expr <- counts(dds, normalized = TRUE)%>% rowMeans()
+
+# as expected, the not significant ones tend to be less expressed, but also some with decent expression. 
+ggplot(data.frame(
+    mean_expr = c(avg_expr_not_sig, avg_expr),
+    condition = factor(c(rep("not_sig", length(avg_expr_not_sig)), rep("all", length(avg_expr))))
+) %>% filter(mean_expr<1e3), aes(mean_expr, fill = condition)) +
+    geom_density(alpha=0.3)+
+    theme_minimal()
 
 
+# run RUVg
+for (i in 5:20) {
+    print(i)
+    res <- RUVg(counts(dds), not_sig, k = i)
+    saveRDS(res, here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
+}
+```
 
+
+### **Try and find out what the Ws from RUVseq correspond to**
+
+```{r}
+mdata <- colData(dds) %>% data.frame()
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_W${i}")), showWarnings = FALSE)
+    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
+    Ws <- RUVseq_res$W
+    colnames(Ws) <- paste0("W", 1:i)
+    mdata <- cbind(mdata %>% select(-contains("W")), data.frame(Ws))
+
+    ###########
+    # HEATMAP #
+    ###########
+    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    correlation_Ws <- covar_correlation(
+        df = mdata,
+        covars = covar_list,
+        components = paste0("W", 1:i)
+    )
+    png(here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    correlation_Ws$heatmap
+    dev.off()
+
+    ############
+    # BOXPLOTS #
+    ############
+    # check for association
+    for (x in columns_to_plot) {
+        print(x)
+        p <- plot_categorical_covar(
+            df = mdata,
+            covar = x,
+            PC = paste0("W", 1:i),
+            bonferroni_correction = TRUE
+        )
+        p <- lapply(p, function(k) {
+            k <- k + geom_hline(yintercept = 0, linetype = "dashed")
+        })
+
+        p <- p %>% wrap_plots(., ncol = 5) &
+            theme(
+                axis.text.x = element_blank(),
+                axis.text.y = element_text(size = 5, face = "bold")
+            )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        ggsave(
+            plot = p,
+            filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), str_interp("W_associations_${x}.png")),
+            dpi = 150,
+            width = 15,
+            height = 10,
+        )
+    }
+
+    ############
+    # W PLOTS #
+    ############
+    # similar to PC plots but with W on the axis. See if this improves seperation of batches
+    W_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in W_pairings) {
+        print(str_interp("Working on W${k[1]} and W${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            p <- density_scatter(
+                df = mdata,
+                x_variable = str_interp("W${k[1]}"),
+                y_variable = str_interp("W${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2
+            )
+
+
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("RUVseq_W${i}"),
+                str_interp("RUVseq_all_covariates_W${k[1]}_W${k[2]}.png")
+            ),
+            dpi = 150,
+            width = 20,
+            height = 15,
+        )
+    }
+}, mc.cores=10)
+```
+
+
+### Use Ws to correct the count data
+```{r}
+vsd_data <- vst(dds, blind=TRUE)
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_W${i}")), showWarnings = FALSE)
+    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
+    Ws <- RUVseq_res$W
+    colnames(Ws) <- paste0("W", 1:i)
+    tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("W")), Ws)
+
+    # use limmas removeBatchEffects to emulate what the linear model will eventually do.
+    norm_data <- assay(vsd_data)
+    mod <- model.matrix(~sampletype, tmp_mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("W", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+    pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+    for (k in 1:20) {
+        pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+    }
+
+    ##################
+    # CALCULATE UMAP #
+    ##################
+    umap_data <- umap(t(adjusted_counts))
+    umap_plot_df <- umap_data$layout %>%
+        data.frame() %>%
+        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+        rownames_to_column("sampleid") %>%
+        left_join(., mdata)
+
+
+    ###########
+    # HEATMAP #
+    ###########
+    association_output <- covar_correlation(
+        df = pca_plot_df,
+        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        components = paste0("PC", 1:15)
+    )
+
+    png(here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "association_heatmap_corrected.png"),
+        res = 150, width = 9, height = 5.5, units = "in"
+    )
+    association_output$heatmap
+    dev.off()
+
+    #############
+    # PCA PLOTS #
+    #############
+    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+    # create PC intervals
+    PC_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in PC_pairings) {
+        print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+            expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+            p <- density_scatter(
+                df = pca_plot_df,
+                x_variable = str_interp("PC${k[1]}"),
+                y_variable = str_interp("PC${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2,
+                xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+                ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+            )
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("RUVseq_W${i}"),
+                str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
+            ),
+            dpi = 150,
+            width = 20,
+            height = 15,
+        )
+    }
+
+    ##############
+    # UMAP PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "UMAP_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+}, mc.cores = 10)
 
 
 ```
