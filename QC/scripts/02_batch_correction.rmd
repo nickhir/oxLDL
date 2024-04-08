@@ -76,10 +76,12 @@ mod0 <- model.matrix(~1, colData(dds))
 dds <- estimateSizeFactors(dds)
 norm_counts  <- counts(dds, normalized = TRUE)
 
-dummy_ <- parallel::mclapply(5:20, function(i) {
-    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-    saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
-}, mc.cores=5)
+
+# runs long, even with parallization 
+# dummy_ <- parallel::mclapply(5:20, function(i) {
+#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+#     saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
+# }, mc.cores=5)
 ```
 
 
@@ -226,8 +228,6 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     )
 
     # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
-
-    
     for (z in 1:2) {
         # extract top 300 genes which most influence PC
         top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
@@ -240,11 +240,34 @@ dummy_ <- parallel::mclapply(5:20, function(i){
             TERM2GENE = gene_sets
         )
 
-        enrichment_result@result %>% data.frame() %>% filter(grepl("HALLMARK", ID)) %>% arrange(p.adjust) %>% head()
+        # for each of the biological domains, grep the top 3 sig. terms
+        # for each of the biological domains, grep the top 3 sig. terms
+        sig_results <- enrichment_result@result %>%
+            mutate(domain = str_extract(Description, "^[^_]*")) %>%
+            mutate(ratio_numeric = sapply(.$GeneRatio, function(x) {
+                eval(
+                    str2expression(x)
+                )
+            })) %>%
+            filter(p.adjust < 0.05) %>%
+            group_by(domain) %>%
+            slice_min(., order_by = p.adjust, n = 3)
+        
+
+
+            # write the visulaization dotplot
+
+            ggplot(sig_results, aes(x = ratio_numeric, y = Description)) +
+                geom_segment(aes(
+                    x = 0, xend = ratio_numeric, y = Description, yend = Description                    
+                ), color = "black") +
+                geom_point(size = 5) +
+                scale_color_gradient(low = "yellow", high = "blue") +
+                theme_minimal()
+            
+        
 
     }
-    
-    
 
 
     pca_plot_df <- pca_data$rotated[, 1:20] %>%

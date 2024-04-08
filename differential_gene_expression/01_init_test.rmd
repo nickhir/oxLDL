@@ -1,0 +1,101 @@
+---
+title: "RNA seq differential gene expression"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+library(DESeq2)
+library("BiocParallel")
+register(MulticoreParam(18))
+library(magrittr)
+library(PCAtools)
+library(tidyverse)
+library(umap)
+library(patchwork)
+library(httpgd)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## Introduction
+
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+mdata <- colData(dds) %>% data.frame()
+# we will just pick 15 sva for now.
+sva_res <- readRDS(here("QC", "results", "sva_15SVs.rds"))
+SVs <- sva_res$sv
+colnames(SVs) <- paste0("SV", 1:15)
+mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
+formula <- paste("~", paste0("SV", 1:15, collapse = " + "))
+dds <- DESeqDataSetFromMatrix(counts(dds),
+    colData = mdata,
+    design = as.formula(paste(formula, "sampletype", sep = "+"))
+)
+
+dds <- DESeqDataSetFromMatrix(counts(dds),
+    colData = mdata,
+    design = ~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 +
+        SV11 + SV12 + SV13 + SV14 + SV15 + sampletype
+)
+# runs very long... parallelization is necessary 
+deseq_res <- DESeq(dds, parallel = TRUE)
+resultsNames(deseq_res)
+
+
+design <- model.matrix(~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 +
+    SV11 + SV12 + SV13 + SV14 + SV15 + sampletype, colData(dds))
+
+#colnames(design) <- str_remove_all(colnames(design), "sampletype")
+contrasts <- limma::makeContrasts(
+    M0_comp = sampletypeM0_oxLDL - sampletypeM0_0,
+    M1_comp = sampletypeM1_oxLDL - sampletypeM1_0,
+    M2_comp = sampletypeM2_oxLDL - sampletypeM2_0,
+    M1vsM0_oxLDL = sampletypeM1_oxLDL - sampletypeM0_oxLDL, 
+    M2vsM0_oxLDL = sampletypeM2_oxLDL - sampletypeM0_oxLDL, 
+    M2vsM1_oxLDL = sampletypeM2_oxLDL - sampletypeM1_oxLDL, 
+    M1vsM0_ctrl = sampletypeM1_0 - sampletypeM0_0, 
+    M2vsM0_ctrl = sampletypeM2_0 - sampletypeM0_0, 
+    M2vsM1_ctrl = sampletypeM2_0 - sampletypeM1_0, 
+    treat_eff_M1_vs_M0 = (sampletypeM1_oxLDL - sampletypeM1_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
+    treat_eff_M2_vs_M0 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
+    treat_eff_M2_vs_M1 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM1_oxLDL - sampletypeM1_0),
+    stim_comp = (sampletypeM0_oxLDL + sampletypeM1_oxLDL + sampletypeM2_oxLDL)/3 - (sampletypeM0_0 + sampletypeM1_0 + sampletypeM2_0)/3,
+    levels = design
+)
+# should be 0 because 15 first rows are the surrogate variables.
+sum(contrasts[0:15, ]) == 0
+
+# it is absolutely crucial, that the order of the "Levels" in contrast, is exactly the same as the
+# output of resultsNames(init_deseq_res), otherwise comparisons are wrong.
+stopifnot(all(rownames(contrasts) == resultsNames(deseq_res)))
+
+M2_comp_res <- results(deseq_res, contrast = contrasts[,3])
+M2_comp_res_conventional <- results(deseq_res, contrast=c("sampletype", "M2_oxLDL", "M2_0"))
+all.equal(data.frame(M2_comp_res), data.frame(M2_comp_res_conventional))
+
+deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
+    data.frame(results(deseq_res, contrast = contrasts[, i]))
+}, mc.cores = 15)
+names(deseq_results) <- colnames(contrasts)
+
+
+```
