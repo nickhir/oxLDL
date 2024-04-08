@@ -202,7 +202,7 @@ gene_sets <- hs_msigdb_df %>%
     select(gs_name, gene_symbol)
 
 vsd_data <- vst(dds, blind=TRUE)
-dummy_ <- parallel::mclapply(5:20, function(i){
+dummy_ <- lapply(5:20, function(i){
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
     svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
     SVs <- svseq$sv
@@ -229,6 +229,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
 
     # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
     for (z in 1:2) {
+        print(paste("Running ORA for PC", z))
         # extract top 300 genes which most influence PC
         top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
 
@@ -251,24 +252,34 @@ dummy_ <- parallel::mclapply(5:20, function(i){
             })) %>%
             filter(p.adjust < 0.05) %>%
             group_by(domain) %>%
-            slice_min(., order_by = p.adjust, n = 3)
+            slice_min(., order_by = p.adjust, n = 3) %>%
+            mutate(Description_short = shorten_strings(Description, 30))
         
-
-
-            # write the visulaization dotplot
-
-            ggplot(sig_results, aes(x = ratio_numeric, y = Description)) +
+        if (nrow(sig_results) > 0) {
+            enrichment_plot <- ggplot(sig_results, aes(x = ratio_numeric, y = Description_short, color = p.adjust)) +
                 geom_segment(aes(
-                    x = 0, xend = ratio_numeric, y = Description, yend = Description                    
-                ), color = "black") +
+                    x = 0, xend = ratio_numeric, y = Description_short, yend = Description_short
+                ), color = "black", linewidth = 1.5) +
                 geom_point(size = 5) +
-                scale_color_gradient(low = "yellow", high = "blue") +
-                theme_minimal()
-            
-        
+                scale_color_gradient(low = "red", high = "blue") +
+                theme_Publication_side() +
+                ylab("Description") +
+                xlab("Gene Ratio") +
+                scale_x_continuous(expand = c(0, 0.01))
+        } else {
+            enrichment_plot <- ggplot() +
+                theme_void()
+        }
+        ggsave(
+            plot = enrichment_plot,
+            file = here("QC", "results", "imgs", str_interp("SVA_${i}"), str_interp("ORA_PC${z}.png")),
+            dpi=150, 
+            width=10,
+            height = 6
+
+        )
 
     }
-
 
     pca_plot_df <- pca_data$rotated[, 1:20] %>%
         rownames_to_column("sample_id") %>%
@@ -376,7 +387,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         width = 20,
         height = 15,
     )
-}, mc.cores=10)
+})
 ```
 
 

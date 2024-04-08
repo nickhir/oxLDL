@@ -265,3 +265,21 @@ density_scatter <- function(
         plot_layout(design = layout, widths = c(1, density_plot_ratio), heights = c(density_plot_ratio, 1))
     return(final_plot)
 }
+
+#' Shorten a string to a specified length.
+#'
+#' This function shortens a given input string to a specified length by truncating it and appending "..." if the string length exceeds the specified limit.
+#'
+#' @param input_strings A vector of character strings to be shortened.
+#' @param n An integer specifying the maximum length of the shortened string.
+#' @return A character string shortened to the specified length.
+#' @examples
+#' shorten_strings("Lorem ipsum dolor sit amet", 10)
+#' # Output: "Lorem ipsu..."
+#'
+#' @export
+shorten_strings <- function(input_strings, n) {
+  shortened <- ifelse(nchar(input_strings) <= n, input_strings, substr(input_strings, 1, n))
+  shortened <- paste0(shortened, ifelse(nchar(input_strings) > n, "...", ""))
+  return(shortened)
+}

@@ -30,6 +30,31 @@ theme_Publication <- function(base_size=14) {
   
 }
 
+theme_Publication_side <- function(base_size=14) {
+  library(grid)
+  library(ggthemes)
+  (theme_foundation(base_size=base_size)
+    + theme(plot.title = element_text(face = "bold",
+                                      size = rel(1.2), hjust = 0.5),
+            text = element_text(),
+            panel.background = element_rect(colour = NA),
+            plot.background = element_rect(colour = NA),
+            panel.border = element_rect(colour = NA),
+            axis.title = element_text(face = "bold",size = rel(1)),
+            axis.title.y = element_text(angle=90,vjust =2),
+            axis.title.x = element_text(vjust = -0.2),
+            axis.text = element_text(), 
+            axis.line = element_line(colour="black"),
+            axis.ticks = element_line(),
+            panel.grid.major = element_line(colour="#f0f0f0"),
+            panel.grid.minor = element_blank(),
+            plot.margin=unit(c(3,3,3,3),"mm"),
+            strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+            strip.text = element_text(face="bold")
+    ))
+  
+}
+
 small_axis <- function(label = NULL, fontsize = 7, arrow_length = 25, fix_coord = FALSE, arrow_offset=6,
                        arrow_spec = grid::arrow(ends = "both", type = "closed", angle = 20, length = unit(arrow_length / 7, units)),
                        units = "mm", ...){
