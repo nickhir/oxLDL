@@ -41,6 +41,7 @@ library(clusterProfiler)
 library(RUVSeq)
 library(httpgd)
 library(tidyverse)
+library(Rtsne)
 
 library(here)
 source(here("plot_theme.R"))
@@ -108,7 +109,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         covars = covar_list,
         components = paste0("SV", 1:i)
     )
-    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), " tmap.png"), res = 150, width = 9, height = 5.5, units = "in")
     correlation_SVs$heatmap
     dev.off()
 
@@ -187,7 +188,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             height = 15,
         )
     }
-}, mc.cores = 10)
+}, mc.cores = 15)
 
 ```
 
@@ -202,7 +203,7 @@ gene_sets <- hs_msigdb_df %>%
     select(gs_name, gene_symbol)
 
 vsd_data <- vst(dds, blind=TRUE)
-dummy_ <- lapply(5:20, function(i){
+dummy_ <- parallel::mclapply(5:20, function(i){
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
     svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
     SVs <- svseq$sv
@@ -291,12 +292,22 @@ dummy_ <- lapply(5:20, function(i){
     ##################
     # CALCULATE UMAP #
     ##################
-    umap_data <- umap(t(adjusted_counts))
+    umap_data <- umap::umap(t(adjusted_counts))
     umap_plot_df <- umap_data$layout %>%
         data.frame() %>%
         magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
         rownames_to_column("sampleid") %>%
         left_join(., mdata)
+    
+    ##################
+    # CALCULATE TSNE #
+    ##################
+    tsne_data <- Rtsne::Rtsne(t(adjusted_counts))
+    tsne_plot_df <- tsne_data$Y %>%
+            data.frame() %>%
+            magrittr::set_colnames(c("TSNE1", "TSNE2")) %>%
+            mutate("sampleid" = colnames(adjusted_counts)) %>%
+            left_join(., mdata)
 
 
     ###########
@@ -382,12 +393,42 @@ dummy_ <- lapply(5:20, function(i){
     final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
     ggsave(
         plot = final_plot,
-        filename = here("QC", "results", "imgs",str_interp("SVA_${i}"), "UMAP_all_covariates_corrected.png"),
+        filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), "UMAP_all_covariates_corrected.png"),
         dpi = 150,
         width = 20,
         height = 15,
     )
-})
+    
+    ##############
+    # TSNE PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = tsne_plot_df,
+            x_variable = "TSNE1",
+            y_variable = "TSNE2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), "TSNE_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+    
+}, mc.cores=15) 
 ```
 
 
@@ -439,7 +480,7 @@ for (i in 1:20) {
 ##################
 # CALCULATE UMAP #
 ##################
-umap_data <- umap(t(adjusted_counts))
+umap_data <- umap::umap(t(adjusted_counts))
 umap_plot_df <- umap_data$layout %>%
     data.frame() %>%
     magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
@@ -574,7 +615,7 @@ for (i in 1:20) {
 ##################
 # CALCULATE UMAP #
 ##################
-umap_data <- umap(t(adjusted_counts))
+umap_data <- umap::umap(t(adjusted_counts))
 umap_plot_df <- umap_data$layout %>%
     data.frame() %>%
     magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
@@ -666,7 +707,7 @@ We will use empirical control genes to adjust batches.
 However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
 https://support.bioconductor.org/p/9137741/
 
-```{r}
+```{r, eval=FALSE}
 # first pass differential expression to determine the empirical contorl genes, i.e. the genes that do not change
 dds0 <- DESeqDataSetFromMatrix(
     counts(dds, normalize=FALSE),
@@ -752,7 +793,6 @@ for (i in 5:20) {
 
 
 ### **Try and find out what the Ws from RUVseq correspond to**
-
 ```{r}
 mdata <- colData(dds) %>% data.frame()
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
@@ -851,7 +891,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             height = 15,
         )
     }
-}, mc.cores=10)
+}, mc.cores=15)
 ```
 
 
@@ -888,16 +928,79 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     for (k in 1:20) {
         pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
     }
+        # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
+    for (z in 1:2) {
+        print(paste("Running ORA for PC", z))
+        # extract top 300 genes which most influence PC
+        top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
+
+        enrichment_result <- enricher(
+            gene = top_loadings_gene_names,
+            universe = rownames(dds),
+            minGSSize = 5,
+            maxGSSize = 300,
+            TERM2GENE = gene_sets
+        )
+
+        # for each of the biological domains, grep the top 3 sig. terms
+        # for each of the biological domains, grep the top 3 sig. terms
+        sig_results <- enrichment_result@result %>%
+            mutate(domain = str_extract(Description, "^[^_]*")) %>%
+            mutate(ratio_numeric = sapply(.$GeneRatio, function(x) {
+                eval(
+                    str2expression(x)
+                )
+            })) %>%
+            filter(p.adjust < 0.05) %>%
+            group_by(domain) %>%
+            slice_min(., order_by = p.adjust, n = 3) %>%
+            mutate(Description_short = shorten_strings(Description, 30))
+        
+        if (nrow(sig_results) > 0) {
+            enrichment_plot <- ggplot(sig_results, aes(x = ratio_numeric, y = Description_short, color = p.adjust)) +
+                geom_segment(aes(
+                    x = 0, xend = ratio_numeric, y = Description_short, yend = Description_short
+                ), color = "black", linewidth = 1.5) +
+                geom_point(size = 5) +
+                scale_color_gradient(low = "red", high = "blue") +
+                theme_Publication_side() +
+                ylab("Description") +
+                xlab("Gene Ratio") +
+                scale_x_continuous(expand = c(0, 0.01))
+        } else {
+            enrichment_plot <- ggplot() +
+                theme_void()
+        }
+        ggsave(
+            plot = enrichment_plot,
+            file = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), str_interp("ORA_PC${z}.png")),
+            dpi=150, 
+            width=10,
+            height = 6
+
+        )
+
+    }
 
     ##################
     # CALCULATE UMAP #
     ##################
-    umap_data <- umap(t(adjusted_counts))
+    umap_data <- umap::umap(t(adjusted_counts))
     umap_plot_df <- umap_data$layout %>%
         data.frame() %>%
         magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
         rownames_to_column("sampleid") %>%
         left_join(., mdata)
+
+    ##################
+    # CALCULATE TSNE #
+    ##################
+    tsne_data <- Rtsne::Rtsne(t(adjusted_counts))
+    tsne_plot_df <- tsne_data$Y %>%
+            data.frame() %>%
+            magrittr::set_colnames(c("TSNE1", "TSNE2")) %>%
+            mutate("sampleid" = colnames(adjusted_counts)) %>%
+            left_join(., mdata)
 
 
     ###########
@@ -988,14 +1091,61 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         width = 20,
         height = 15,
     )
-}, mc.cores = 10)
+
+    ##############
+    # TSNE PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = tsne_plot_df,
+            x_variable = "TSNE1",
+            y_variable = "TSNE2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "TSNE_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+}, mc.cores = 15)
 ```
 
 
 
 ### Conclusion
 
+**RUVseq**:
+Generally worse separation  after adjustment for state. 
+This of course is not necessary a bad thing. 
+After adjusting, batch 65609 and 61519 in UMAP is still very different.
+Even if we include 20 surrogate variables. 
+We have to go all the way up to 14 RUV variables for the big 65609 cluster to move close to the other samples. 
 
+
+**SVA**:
+Looks "stronger", i.e. more variance gets removed and separation  is cleaner.
+Also the separation of state is much cleaner. 
+SVA even manages to adjust batch 65609 and 61519 in UMAP when we move from 11 SVs to 12SVs.
+Before that, we see a very clear seperation in UMAP and TSNE.
+
+
+For both types of adjusting, the ORA reveals the exact same things regardless of number of SVs.
+14 RUVseq SVs actually remove less variation than 12 SVA SVs...
+
+I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq
 
 ```{r}
 sessionInfo()
