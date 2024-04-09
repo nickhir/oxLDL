@@ -30,6 +30,8 @@ knitr::opts_chunk$set(
 We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
 In this script, we will try out and evaluate different methods to correct for that. 
 
+Here we adjust the data where we have removed samples with extremely low counts < 10k.
+ 
 ```{r, load libraries}
 library(DESeq2)
 library(magrittr)
@@ -65,10 +67,11 @@ dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
 # lets try the function:
 # the documentation for this function is sparse, but I think it expects log transformed counts
 # that were normalized with respect to library size -> vst transformed data
-# at least that is the data that is used in the example of the function so we will do the same. 
-# this runs very long. 
-mod  <- model.matrix(~ sampletype, colData(dds))
+# at least that is the data that is used in the example of the function so we will do the same.
+# this runs very long.
+mod <- model.matrix(~sampletype, colData(dds))
 mod0 <- model.matrix(~1, colData(dds))
+
 # this returns 54 which is kind of is definitely way too many...
 #estimated_n_SVs = num.sv(norm_data, mod = mod, method = "be", B = 30)
 # this return 3 which seems too few...
@@ -78,11 +81,21 @@ dds <- estimateSizeFactors(dds)
 norm_counts  <- counts(dds, normalized = TRUE)
 
 
-# runs long, even with parallization 
+# runs long, even with parallization
 # dummy_ <- parallel::mclapply(5:20, function(i) {
 #     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
 #     saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
 # }, mc.cores=5)
+
+
+# do a test if this is the same -> they are. correlation > 0.99 for all SVs
+# mod <- model.matrix(~ state + oxldl + state:oxldl, colData(dds))
+# mod0 <- model.matrix(~1, colData(dds))
+
+# SV12_test <- svaseq(norm_counts, mod, mod0, n.sv = 12)
+# SV12_original <- readRDS(here("QC", "results", "sva_12SVs.rds"))
+# cor(SV12_test$sv[,7], SV12_original$sv[,7])
+
 ```
 
 
@@ -1145,7 +1158,7 @@ Before that, we see a very clear seperation in UMAP and TSNE.
 For both types of adjusting, the ORA reveals the exact same things regardless of number of SVs.
 14 RUVseq SVs actually remove less variation than 12 SVA SVs...
 
-I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq
+I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq.
 
 ```{r}
 sessionInfo()

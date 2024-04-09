@@ -1,0 +1,902 @@
+---
+title: "RNA seq batch correction"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+## **Introduction**
+We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
+In this script, we will try out and evaluate different methods to correct for that. 
+
+Here we adjust the data where we have removed samples with less than 5 million reads. 
+
+```{r, load libraries}
+library(DESeq2)
+library(magrittr)
+library(PCAtools)
+library(umap)
+library(patchwork)
+library(sva)
+library(clusterProfiler)
+library(RUVSeq)
+library(httpgd)
+library(tidyverse)
+library(Rtsne)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **SVA**
+First, we test [sva](https://bioconductor.org/packages/release/bioc/html/sva.html). 
+`svaseq` expects normalized input data. Otherwise the first surrogate variable is often the lirbary size.
+See [Jeff Leeks reply](https://support.bioconductor.org/p/76381/). We take normalized DESeq2 counts.
+Internally first step of `svaseq` is log transformation so important that our normalized counts are not log transformed.
+
+```{r calculate SVs}
+# load in DESeq2dataset where the libsize outliers are already removed (less than 5 million reads)
+# for creation see script **01_initial_QC.rmd**
+dds <- readRDS(here("QC", "results", "dds_libsize_5e6_removed.rds"))
+
+
+# sva package also provides a function to estimate the number of SVs we should use.
+# lets try the function:
+# the documentation for this function is sparse, but I think it expects log transformed counts
+# that were normalized with respect to library size -> vst transformed data
+# at least that is the data that is used in the example of the function so we will do the same.
+# this runs very long.
+mod <- model.matrix(~sampletype, colData(dds))
+mod0 <- model.matrix(~1, colData(dds))
+
+# this returns 54 which is kind of is definitely way too many...
+#estimated_n_SVs = num.sv(norm_data, mod = mod, method = "be", B = 30)
+# this return 3 which seems too few...
+#estimated_n_SVs_leek = num.sv(norm_data, mod=mod, method= "leek")
+
+dds <- estimateSizeFactors(dds)
+norm_counts  <- counts(dds, normalized = TRUE)
+
+
+# runs long, even with parallization
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+    saveRDS(svseq, here("QC", "results", str_interp("sva_libsize_5e6_${i}SVs.rds")))
+}, mc.cores=15)
+
+
+# do a test if this is the same -> they are. correlation > 0.99 for all SVs
+# mod <- model.matrix(~ state + oxldl + state:oxldl, colData(dds))
+# mod0 <- model.matrix(~1, colData(dds))
+
+# SV12_test <- svaseq(norm_counts, mod, mod0, n.sv = 12)
+# SV12_original <- readRDS(here("QC", "results", "sva_12SVs.rds"))
+# cor(SV12_test$sv[,7], SV12_original$sv[,7])
+
+```
+
+
+### **Try and find out what the SVs correspond to**
+Still difficult to exactly determine what SV1 corresponds to. SV2 very clearly batch, but that was already the case for the PCA.
+Big difference is that none of the SVs is associated with our conditions of interest which is good.
+```{r}
+mdata <- colData(dds) %>% data.frame()
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_libsize_5e6_${i}SVs.rds")))
+    SVs <- svseq$sv
+    colnames(SVs) <- paste0("SV", 1:i)
+    mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
+
+    ###########
+    # HEATMAP #
+    ###########
+    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    correlation_SVs <- covar_correlation(
+        df = mdata,
+        covars = covar_list,
+        components = paste0("SV", 1:i)
+    )
+    png(here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    correlation_SVs$heatmap
+    dev.off()
+
+    ############
+    # BOXPLOTS #
+    ############
+    # check for association
+    for (x in columns_to_plot) {
+        print(x)
+        p <- plot_categorical_covar(
+            df = mdata,
+            covar = x,
+            PC = paste0("SV", 1:i),
+            bonferroni_correction = TRUE
+        )
+        p <- lapply(p, function(k) {
+            k <- k + geom_hline(yintercept = 0, linetype = "dashed")
+        })
+
+        p <- p %>% wrap_plots(., ncol = 5) &
+            theme(
+                axis.text.x = element_blank(),
+                axis.text.y = element_text(size = 5, face = "bold")
+            )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        ggsave(
+            plot = p,
+            filename = here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), str_interp("SV_associations_${x}.png")),
+            dpi = 150,
+            width = 15,
+            height = 10,
+        )
+    }
+
+    ############
+    # SV PLOTS #
+    ############
+    # similar to PC plots but with SV on the axis. See if this improves seperation of batches
+    SV_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in SV_pairings) {
+        print(str_interp("Working on SV${k[1]} and SV${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            p <- density_scatter(
+                df = mdata,
+                x_variable = str_interp("SV${k[1]}"),
+                y_variable = str_interp("SV${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2
+            )
+
+
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"),
+                str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
+            ),
+            dpi = 150,
+            width = 20,
+            height = 15,
+        )
+    }
+}, mc.cores = 15)
+
+```
+
+
+### Use SVs to correct the count data
+```{r}
+# this is needed for the enrichment analysis that we are doing.
+hs_msigdb_df <- msigdbr::msigdbr(species = "Homo sapiens")
+
+gene_sets <- hs_msigdb_df %>%
+    filter(gs_subcat == "GO:BP" | gs_cat == "H" | gs_subcat == "CP:KEGG") %>%
+    select(gs_name, gene_symbol)
+
+vsd_data <- vst(dds, blind=TRUE)
+dummy_ <- parallel::mclapply(5:20, function(i){
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_libsize_5e6_${i}SVs.rds")))
+    SVs <- svseq$sv
+    colnames(SVs) <- paste0("SV", 1:i)
+    tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+    # use limmas removeBatchEffects to emulate what the linear model will eventually do.
+    norm_data <- assay(vsd_data)
+    mod <- model.matrix(~sampletype, tmp_mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("SV", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+
+    # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
+    for (z in 1:2) {
+        print(paste("Running ORA for PC", z))
+        # extract top 300 genes which most influence PC
+        top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
+
+        enrichment_result <- enricher(
+            gene = top_loadings_gene_names,
+            universe = rownames(dds),
+            minGSSize = 5,
+            maxGSSize = 300,
+            TERM2GENE = gene_sets
+        )
+
+        # for each of the biological domains, grep the top 3 sig. terms
+        # for each of the biological domains, grep the top 3 sig. terms
+        sig_results <- enrichment_result@result %>%
+            mutate(domain = str_extract(Description, "^[^_]*")) %>%
+            mutate(ratio_numeric = sapply(.$GeneRatio, function(x) {
+                eval(
+                    str2expression(x)
+                )
+            })) %>%
+            filter(p.adjust < 0.05) %>%
+            group_by(domain) %>%
+            slice_min(., order_by = p.adjust, n = 3) %>%
+            mutate(Description_short = shorten_strings(Description, 30))
+        
+        if (nrow(sig_results) > 0) {
+            enrichment_plot <- ggplot(sig_results, aes(x = ratio_numeric, y = Description_short, color = p.adjust)) +
+                geom_segment(aes(
+                    x = 0, xend = ratio_numeric, y = Description_short, yend = Description_short
+                ), color = "black", linewidth = 1.5) +
+                geom_point(size = 5) +
+                scale_color_gradient(low = "red", high = "blue") +
+                theme_Publication_side() +
+                ylab("Description") +
+                xlab("Gene Ratio") +
+                scale_x_continuous(expand = c(0, 0.01))
+        } else {
+            enrichment_plot <- ggplot() +
+                theme_void()
+        }
+        ggsave(
+            plot = enrichment_plot,
+            file = here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), str_interp("ORA_PC${z}.png")),
+            dpi=150, 
+            width=10,
+            height = 6
+
+        )
+
+    }
+
+    pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+    for (k in 1:20) {
+        pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+    }
+
+    ##################
+    # CALCULATE UMAP #
+    ##################
+    umap_data <- umap::umap(t(adjusted_counts))
+    umap_plot_df <- umap_data$layout %>%
+        data.frame() %>%
+        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+        rownames_to_column("sampleid") %>%
+        left_join(., mdata)
+    
+    ##################
+    # CALCULATE TSNE #
+    ##################
+    tsne_data <- Rtsne::Rtsne(t(adjusted_counts))
+    tsne_plot_df <- tsne_data$Y %>%
+            data.frame() %>%
+            magrittr::set_colnames(c("TSNE1", "TSNE2")) %>%
+            mutate("sampleid" = colnames(adjusted_counts)) %>%
+            left_join(., mdata)
+
+
+    ###########
+    # HEATMAP #
+    ###########
+    association_output <- covar_correlation(
+        df = pca_plot_df,
+        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        components = paste0("PC", 1:15)
+    )
+
+    png(here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), "association_heatmap_corrected.png"),
+        res = 150, width = 9, height = 5.5, units = "in"
+    )
+    association_output$heatmap
+    dev.off()
+
+    #############
+    # PCA PLOTS #
+    #############
+    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+    # create PC intervals
+    PC_pairings <- lapply(1:floor(i/2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in PC_pairings) {
+        print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+            expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+            p <- density_scatter(
+                df = pca_plot_df,
+                x_variable = str_interp("PC${k[1]}"),
+                y_variable = str_interp("PC${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2,
+                xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+                ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+            )
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"),
+                str_interp("SV${i}_PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
+            ),
+            dpi = 150,
+            width = 20,
+            height = 15,
+        )
+    }
+
+    ##############
+    # UMAP PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), "SV${i}_UMAP_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+    
+    ##############
+    # TSNE PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = tsne_plot_df,
+            x_variable = "TSNE1",
+            y_variable = "TSNE2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), "SV${i}_TSNE_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+    
+}, mc.cores=15) 
+```
+
+
+## **RUVseq**
+We will use empirical control genes to adjust batches.
+
+However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
+https://support.bioconductor.org/p/9137741/
+
+```{r, eval=TRUE}
+# first pass differential expression to determine the empirical contorl genes, i.e. the genes that do not change
+dds0 <- DESeqDataSetFromMatrix(
+    counts(dds, normalize=FALSE),
+    colData(dds),
+    ~ 0 + sampletype
+)
+init_deseq_res <- DESeq(dds0)
+
+# we are actually interested in a wide range of comparisons:
+# we want to know difference between the different macrophage subtype of the same condition and
+# also differnces of the same macrophage subtype
+
+design <- model.matrix(~ 0 + sampletype, colData(dds0))
+#colnames(design) <- str_remove_all(colnames(design), "sampletype")
+contrasts <- limma::makeContrasts(
+    M0_comp = sampletypeM0_oxLDL - sampletypeM0_0,
+    M1_comp = sampletypeM1_oxLDL - sampletypeM1_0,
+    M2_comp = sampletypeM2_oxLDL - sampletypeM2_0,
+    M1vsM0_oxLDL = sampletypeM1_oxLDL - sampletypeM0_oxLDL, 
+    M2vsM0_oxLDL = sampletypeM2_oxLDL - sampletypeM0_oxLDL, 
+    M2vsM1_oxLDL = sampletypeM2_oxLDL - sampletypeM1_oxLDL, 
+    M1vsM0_ctrl = sampletypeM1_0 - sampletypeM0_0, 
+    M2vsM0_ctrl = sampletypeM2_0 - sampletypeM0_0, 
+    M2vsM1_ctrl = sampletypeM2_0 - sampletypeM1_0, 
+    treat_eff_M1_vs_M0 = (sampletypeM1_oxLDL - sampletypeM1_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
+    treat_eff_M2_vs_M0 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
+    treat_eff_M2_vs_M1 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM1_oxLDL - sampletypeM1_0),
+    stim_comp = (sampletypeM0_oxLDL + sampletypeM1_oxLDL + sampletypeM2_oxLDL)/3 - (sampletypeM0_0 + sampletypeM1_0 + sampletypeM2_0)/3,
+    levels = design
+)
+
+# it is absolutely crucial, that the order of the "Levels" in contrast, is exactly the same as the 
+# output of resultsNames(init_deseq_res), otherwise comparisons are wrong.
+rownames(contrasts) == resultsNames(init_deseq_res)
+# a few sanity checks
+M2_comp_res <- results(init_deseq_res, contrast = contrasts[,3])
+M2_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_oxLDL", "M2_0"))
+identical(data.frame(M2_comp_res), data.frame(M2_comp_res_conventional))
+
+M0_comp_res <- results(init_deseq_res, contrast = contrasts[,1])
+M0_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M0_oxLDL", "M0_0"))
+identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
+
+M2_M1_comp_res <- results(init_deseq_res, contrast = contrasts[,9])
+M2_M1_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_0", "M1_0"))
+identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
+
+deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
+    data.frame(results(init_deseq_res, contrast = contrasts[, i]))
+}, mc.cores=15)
+
+names(deseq_results) <- colnames(contrasts)
+all(deseq_results$M0_comp == data.frame(M0_comp_res_conventional))
+all(deseq_results$M2vsM1_ctrl == data.frame(M2_M1_comp_res_conventional))
+all(deseq_results$M2_comp == data.frame(M2_comp_res_conventional))
+
+# extract all genes with a p value > 0.3.
+# We want to get a few hundred genes
+not_sig <- lapply(deseq_results, function(x){
+    x %>% filter(padj>0.3) %>% rownames()
+}) %>% Reduce(intersect, .)
+
+# check the average expression of these.
+avg_expr_not_sig <- counts(dds, normalized = TRUE)[not_sig, ] %>% rowMeans()
+avg_expr <- counts(dds, normalized = TRUE)%>% rowMeans()
+
+# as expected, the not significant ones tend to be less expressed, but also some with decent expression. 
+ggplot(data.frame(
+    mean_expr = c(avg_expr_not_sig, avg_expr),
+    condition = factor(c(rep("not_sig", length(avg_expr_not_sig)), rep("all", length(avg_expr))))
+) %>% filter(mean_expr<1e3), aes(mean_expr, fill = condition)) +
+    geom_density(alpha=0.3)+
+    theme_minimal()
+
+
+# run RUVg
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    print(i)
+    res <- RUVg(counts(dds), not_sig, k = i)
+    saveRDS(res, here("QC", "results", str_interp("RUVg_libsize_5e6_${i}Ws.rds")))
+})
+
+
+```
+
+
+### **Try and find out what the Ws from RUVseq correspond to**
+```{r}
+mdata <- colData(dds) %>% data.frame()
+columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}")), showWarnings = FALSE)
+    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_libsize_5e6_${i}Ws.rds")))
+    Ws <- RUVseq_res$W
+    colnames(Ws) <- paste0("W", 1:i)
+    mdata <- cbind(mdata %>% select(-contains("W")), data.frame(Ws))
+
+    ###########
+    # HEATMAP #
+    ###########
+    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    correlation_Ws <- covar_correlation(
+        df = mdata,
+        covars = covar_list,
+        components = paste0("W", 1:i)
+    )
+    png(here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    correlation_Ws$heatmap
+    dev.off()
+
+    ############
+    # BOXPLOTS #
+    ############
+    # check for association
+    for (x in columns_to_plot) {
+        print(x)
+        p <- plot_categorical_covar(
+            df = mdata,
+            covar = x,
+            PC = paste0("W", 1:i),
+            bonferroni_correction = TRUE
+        )
+        p <- lapply(p, function(k) {
+            k <- k + geom_hline(yintercept = 0, linetype = "dashed")
+        })
+
+        p <- p %>% wrap_plots(., ncol = 5) &
+            theme(
+                axis.text.x = element_blank(),
+                axis.text.y = element_text(size = 5, face = "bold")
+            )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        ggsave(
+            plot = p,
+            filename = here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), str_interp("W_associations_${x}.png")),
+            dpi = 150,
+            width = 15,
+            height = 10,
+        )
+    }
+
+    ############
+    # W PLOTS #
+    ############
+    # similar to PC plots but with W on the axis. See if this improves seperation of batches
+    W_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in W_pairings) {
+        print(str_interp("Working on W${k[1]} and W${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            p <- density_scatter(
+                df = mdata,
+                x_variable = str_interp("W${k[1]}"),
+                y_variable = str_interp("W${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2
+            )
+
+
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"),
+                str_interp("RUVseq_all_covariates_W${k[1]}_W${k[2]}.png")
+            ),
+            dpi = 150,
+            width = 20,
+            height = 15,
+        )
+    }
+}, mc.cores=15)
+```
+
+
+### Use Ws to correct the count data
+```{r}
+vsd_data <- vst(dds, blind=TRUE)
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}")), showWarnings = FALSE)
+    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_libsize_5e6_${i}Ws.rds")))
+    Ws <- RUVseq_res$W
+    colnames(Ws) <- paste0("W", 1:i)
+    tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("W")), Ws)
+
+    # use limmas removeBatchEffects to emulate what the linear model will eventually do.
+    norm_data <- assay(vsd_data)
+    mod <- model.matrix(~sampletype, tmp_mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("W", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+    pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+    for (k in 1:20) {
+        pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+    }
+        # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
+    for (z in 1:2) {
+        print(paste("Running ORA for PC", z))
+        # extract top 300 genes which most influence PC
+        top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
+
+        enrichment_result <- enricher(
+            gene = top_loadings_gene_names,
+            universe = rownames(dds),
+            minGSSize = 5,
+            maxGSSize = 300,
+            TERM2GENE = gene_sets
+        )
+
+        # for each of the biological domains, grep the top 3 sig. terms
+        # for each of the biological domains, grep the top 3 sig. terms
+        sig_results <- enrichment_result@result %>%
+            mutate(domain = str_extract(Description, "^[^_]*")) %>%
+            mutate(ratio_numeric = sapply(.$GeneRatio, function(x) {
+                eval(
+                    str2expression(x)
+                )
+            })) %>%
+            filter(p.adjust < 0.05) %>%
+            group_by(domain) %>%
+            slice_min(., order_by = p.adjust, n = 3) %>%
+            mutate(Description_short = shorten_strings(Description, 30))
+        
+        if (nrow(sig_results) > 0) {
+            enrichment_plot <- ggplot(sig_results, aes(x = ratio_numeric, y = Description_short, color = p.adjust)) +
+                geom_segment(aes(
+                    x = 0, xend = ratio_numeric, y = Description_short, yend = Description_short
+                ), color = "black", linewidth = 1.5) +
+                geom_point(size = 5) +
+                scale_color_gradient(low = "red", high = "blue") +
+                theme_Publication_side() +
+                ylab("Description") +
+                xlab("Gene Ratio") +
+                scale_x_continuous(expand = c(0, 0.01))
+        } else {
+            enrichment_plot <- ggplot() +
+                theme_void()
+        }
+        ggsave(
+            plot = enrichment_plot,
+            file = here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), str_interp("ORA_PC${z}.png")),
+            dpi=150, 
+            width=10,
+            height = 6
+
+        )
+
+    }
+
+    ##################
+    # CALCULATE UMAP #
+    ##################
+    umap_data <- umap::umap(t(adjusted_counts))
+    umap_plot_df <- umap_data$layout %>%
+        data.frame() %>%
+        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+        rownames_to_column("sampleid") %>%
+        left_join(., mdata)
+
+    ##################
+    # CALCULATE TSNE #
+    ##################
+    tsne_data <- Rtsne::Rtsne(t(adjusted_counts))
+    tsne_plot_df <- tsne_data$Y %>%
+            data.frame() %>%
+            magrittr::set_colnames(c("TSNE1", "TSNE2")) %>%
+            mutate("sampleid" = colnames(adjusted_counts)) %>%
+            left_join(., mdata)
+
+
+    ###########
+    # HEATMAP #
+    ###########
+    association_output <- covar_correlation(
+        df = pca_plot_df,
+        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        components = paste0("PC", 1:15)
+    )
+
+    png(here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), "association_heatmap_corrected.png"),
+        res = 150, width = 9, height = 5.5, units = "in"
+    )
+    association_output$heatmap
+    dev.off()
+
+    #############
+    # PCA PLOTS #
+    #############
+    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+
+    # create PC intervals
+    PC_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in PC_pairings) {
+        print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+            expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+            p <- density_scatter(
+                df = pca_plot_df,
+                x_variable = str_interp("PC${k[1]}"),
+                y_variable = str_interp("PC${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2,
+                xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+                ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+            )
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"),
+                str_interp("W${i}_PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
+            ),
+            dpi = 150,
+            width = 20,
+            height = 15,
+        )
+    }
+
+    ##############
+    # UMAP PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), "W${i}_UMAP_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+
+    ##############
+    # TSNE PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = tsne_plot_df,
+            x_variable = "TSNE1",
+            y_variable = "TSNE2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), "W${i}_TSNE_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 20,
+        height = 15,
+    )
+}, mc.cores = 15)
+```
+
+
+
+### Conclusion
+
+**RUVseq**:
+Generally worse separation  after adjustment for state. 
+This of course is not necessary a bad thing. 
+After adjusting, batch 65609 and 61519 in UMAP is still very different.
+Even if we include 20 surrogate variables. 
+We have to go all the way up to 14 RUV variables for the big 65609 cluster to move close to the other samples. 
+
+
+**SVA**:
+Looks "stronger", i.e. more variance gets removed and separation  is cleaner.
+Also the separation of state is much cleaner. 
+SVA even manages to adjust batch 65609 and 61519 in UMAP when we move from 11 SVs to 12SVs.
+Before that, we see a very clear seperation in UMAP and TSNE.
+
+
+For both types of adjusting, the ORA reveals the exact same things regardless of number of SVs.
+14 RUVseq SVs actually remove less variation than 12 SVA SVs...
+
+I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq.
+
+```{r}
+sessionInfo()
+```
+
+
+
+
