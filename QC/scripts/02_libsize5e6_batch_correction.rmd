@@ -85,7 +85,7 @@ norm_counts  <- counts(dds, normalized = TRUE)
 dummy_ <- parallel::mclapply(5:20, function(i) {
     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
     saveRDS(svseq, here("QC", "results", str_interp("sva_libsize_5e6_${i}SVs.rds")))
-}, mc.cores=15)
+}, mc.cores = 20)
 
 
 # do a test if this is the same -> they are. correlation > 0.99 for all SVs
@@ -201,7 +201,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             height = 15,
         )
     }
-}, mc.cores = 15)
+}, mc.cores = 20)
 
 ```
 
@@ -441,7 +441,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         height = 15,
     )
     
-}, mc.cores=15) 
+}, mc.cores = 20) 
 ```
 
 
@@ -501,7 +501,7 @@ identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
 
 deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
     data.frame(results(init_deseq_res, contrast = contrasts[, i]))
-}, mc.cores=15)
+}, mc.cores = 20)
 
 names(deseq_results) <- colnames(contrasts)
 all(deseq_results$M0_comp == data.frame(M0_comp_res_conventional))
@@ -637,7 +637,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             height = 15,
         )
     }
-}, mc.cores=15)
+}, mc.cores = 20)
 ```
 
 
@@ -866,32 +866,17 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         width = 20,
         height = 15,
     )
-}, mc.cores = 15)
+}, mc.cores = 20)
 ```
 
 
 
 ### Conclusion
 
-**RUVseq**:
-Generally worse separation  after adjustment for state. 
-This of course is not necessary a bad thing. 
-After adjusting, batch 65609 and 61519 in UMAP is still very different.
-Even if we include 20 surrogate variables. 
-We have to go all the way up to 14 RUV variables for the big 65609 cluster to move close to the other samples. 
-
-
 **SVA**:
-Looks "stronger", i.e. more variance gets removed and separation  is cleaner.
-Also the separation of state is much cleaner. 
-SVA even manages to adjust batch 65609 and 61519 in UMAP when we move from 11 SVs to 12SVs.
-Before that, we see a very clear seperation in UMAP and TSNE.
+When we use 17 SVs. Then even in the UMAP we get a decent mixing of batches.
 
-
-For both types of adjusting, the ORA reveals the exact same things regardless of number of SVs.
-14 RUVseq SVs actually remove less variation than 12 SVA SVs...
-
-I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq.
+Still very difficult to determine what SV1 actually corresponds to...
 
 ```{r}
 sessionInfo()

@@ -990,6 +990,63 @@ ggsave(combined_plot,
 ```
 
 
+### ENCODE QC recommendations
+https://www.encodeproject.org/data-standards/rna-seq/long-rnas/
+"Replicate concordance: the gene level quantification should have a Spearman correlation of >0.9 between
+isogenic replicates and >0.8 between anisogenic replicates (i.e. replicates from different donors)."
+
+
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_5e6_removed.rds"))
+dds <- estimateSizeFactors(dds)
+mdata <- colData(dds) %>% data.frame()
+norm_cnts <- counts(dds, normalize=TRUE)
+
+# we do have some isogenic replicates:
+technical_repl_lines <- names(table(mdata$line))[table(mdata$line) > 6]
+
+
+technical_replicate_samples <- mdata %>%
+    group_by(samplename) %>%
+    mutate(n = n()) %>%
+    filter(n == 2) %>%
+    arrange(samplename) %>% 
+    pull(sampleid)
+
+pairings <- lapply(1:(length(technical_replicate_samples)/2), function(x) {
+    c(2 * x - 1, 2 * x)
+})
+
+pairwise_cor <- sapply(pairings, function(i){
+    tmp_samples <- technical_replicate_samples[i]
+    cor(norm_cnts[, tmp_samples[1]], norm_cnts[, tmp_samples[2]], method="spearman")
+})
+table(pairwise_cor > 0.9)
+
+
+
+# anisogenic replicates
+mdata <- mdata %>%
+    mutate(group = paste(state, oxldl, sep="_")) 
+
+cor_result <- lapply(unique(mdata$group), function(x){
+    samples <- mdata %>%
+        filter(group == x)  %>% 
+        pull(sampleid)
+
+    tmp_cnts <- norm_cnts[, samples]
+    cor_map <- cor(tmp_cnts, method = "spearman")
+    return(cor_map)
+})
+names(cor_result) <- unique(mdata$group)
+
+table(cor_result$M0_0 > 0.8)
+
+dim(cor_result$M0_0 )
+library(ComplexHeatmap)
+Heatmap(cor_result$M0_0) %>% ggplotify::as.ggplot()
+
+```
 
 ```{r}
 sessionInfo()
