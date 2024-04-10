@@ -1136,7 +1136,84 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 }, mc.cores = 15)
 ```
 
+### Effect of library size
+Often recommendation to remove samples with less than 5M reads. However, I think that we do not have to do this in our case because
+samples with less reads are not different in the PC projection. 
+They do show signs of clustering around PC3 and PC4, but this is effectively removed after SVA analysis.
 
+```{r}
+# see if this is gobbled up if we run SVA
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+mdata <- colData(dds) %>% data.frame()
+sva_seq <- readRDS(here("QC", "results", "sva_12SVs.rds"))
+tmp_mdata <- cbind(
+    data.frame(colData(dds)),
+    sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:12))
+)
+norm_cnts <- assay(vst(dds, blind=TRUE))
+
+########################
+# PLOT UNCORRECTED PCA #
+########################
+pca_data <- PCAtools::pca(norm_cnts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+i = c(3, 4)
+density_scatter(
+    df = pca_plot_df %>% mutate(low_libsize_dummy = ifelse(libsize < 5e6, "low libsize", "normal libsize")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "low_libsize_dummy",
+    density_plot_ratio = 0.15,
+    pt_size = 3
+)
+
+# now adjust counts
+
+mod <- model.matrix(~sampletype,tmp_mdata)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("SV", 1:12, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_cnts,
+    covariates = mod0,
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+i = c(1, 2)
+i = c(3, 4)
+density_scatter(
+    df = pca_plot_df %>% mutate(low_libsize_dummy = ifelse(libsize < 5e6, "low libsize", "normal libsize")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "low_libsize_dummy",
+    density_plot_ratio = 0.15,
+    pt_size = 4,
+    xlab = str_interp("PC${i[1]}"),
+    ylab = str_interp("PC${i[2]}"),
+)
+```
 
 ### Conclusion
 

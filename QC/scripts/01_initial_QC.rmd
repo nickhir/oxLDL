@@ -489,7 +489,7 @@ ggplot(pca_plot_df, aes(PC1, libsize)) +
 # for PC3 and 4 it seems like the samples below 5e6 are making a big difference
 i = c(1, 2)
 density_scatter(
-    df = pca_plot_df %>% mutate(low_libsize_dummy = ifelse(libsize < 1e6, "low libsize", "normal libsize")),
+    df = pca_plot_df %>% mutate(low_libsize_dummy = ifelse(libsize < 1e4, "low libsize", "normal libsize")),
     x_variable = str_interp("PC${i[1]}"),
     y_variable = str_interp("PC${i[2]}"),
     color_by = "low_libsize_dummy",
