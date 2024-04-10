@@ -27,10 +27,8 @@ knitr::opts_chunk$set(
 ```
 
 ## **Introduction**
-We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
-In this script, we will try out and evaluate different methods to correct for that. 
-
-Here we adjust the data where we have removed samples with extremely low counts < 10k.
+After doing a first pass batch correction, we noticed that we still have samples that are heavily influenced by small 
+library size. Noticed this via pairwise correlation analysis of biological replicates (anisogenic replicates).
  
 ```{r, load libraries}
 library(DESeq2)
@@ -84,7 +82,7 @@ Internally first step of `svaseq` is log transformation so important that our no
 ```{r calculate SVs}
 # load in DESeq2dataset where the libsize outliers are already removed.
 # for creation see script **01_initial_QC.rmd**
-dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_ENCODE_removed.rds"))
 
 
 # sva package also provides a function to estimate the number of SVs we should use.
@@ -106,10 +104,10 @@ norm_counts  <- counts(dds, normalized = TRUE)
 
 
 # runs long, even with parallization
-# dummy_ <- parallel::mclapply(5:20, function(i) {
-#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-#     saveRDS(svseq, here("QC", "results", str_interp("sva_${i}SVs.rds")))
-# }, mc.cores=5)
+dummy_ <- parallel::mclapply(5:20, function(i) {
+    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+    saveRDS(svseq, here("QC", "results", str_interp("sva_ENCODE_${i}SVs.rds")))
+}, mc.cores = 20)
 
 
 # do a test if this is the same -> they are. correlation > 0.99 for all SVs
@@ -131,8 +129,8 @@ mdata <- colData(dds) %>% data.frame()
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 
 dummy_ <- parallel::mclapply(5:20, function(i) {
-    dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
-    svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_ENCODE_${i}SVs.rds")))
     SVs <- svseq$sv
     colnames(SVs) <- paste0("SV", 1:i)
     mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
@@ -146,7 +144,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         covars = covar_list,
         components = paste0("SV", 1:i)
     )
-    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), " tmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    png(here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"), " tmap.png"), res = 150, width = 9, height = 5.5, units = "in")
     correlation_SVs$heatmap
     dev.off()
 
@@ -178,7 +176,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             )
         ggsave(
             plot = p,
-            filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), str_interp("SV_associations_${x}.png")),
+            filename = here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"), str_interp("SV_associations_${x}.png")),
             dpi = 150,
             width = 15,
             height = 10,
@@ -217,7 +215,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         ggsave(
             plot = final_plot,
             filename = here(
-                "QC", "results", "imgs", str_interp("SVA_${i}"),
+                "QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"),
                 str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
             ),
             dpi = 150,
@@ -225,7 +223,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             height = 15,
         )
     }
-}, mc.cores = 15)
+}, mc.cores = 20)
 
 ```
 
@@ -241,8 +239,8 @@ gene_sets <- hs_msigdb_df %>%
 
 vsd_data <- vst(dds, blind=TRUE)
 dummy_ <- parallel::mclapply(5:20, function(i){
-    dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
-    svseq <- readRDS(here("QC", "results", str_interp("sva_${i}SVs.rds")))
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_ENCODE_${i}SVs.rds")))
     SVs <- svseq$sv
     colnames(SVs) <- paste0("SV", 1:i)
     tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
@@ -310,7 +308,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         }
         ggsave(
             plot = enrichment_plot,
-            file = here("QC", "results", "imgs", str_interp("SVA_${i}"), str_interp("ORA_PC${z}.png")),
+            file = here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"), str_interp("ORA_PC${z}.png")),
             dpi=150, 
             width=10,
             height = 6
@@ -356,7 +354,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         components = paste0("PC", 1:15)
     )
 
-    png(here("QC", "results", "imgs", str_interp("SVA_${i}"), "association_heatmap_corrected.png"),
+    png(here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"), "association_heatmap_corrected.png"),
         res = 150, width = 9, height = 5.5, units = "in"
     )
     association_output$heatmap
@@ -398,7 +396,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         ggsave(
             plot = final_plot,
             filename = here(
-                "QC", "results", "imgs", str_interp("SVA_${i}"),
+                "QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"),
                 str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
             dpi = 150,
@@ -430,7 +428,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
     ggsave(
         plot = final_plot,
-        filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), "UMAP_all_covariates_corrected.png"),
+        filename = here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"), "UMAP_all_covariates_corrected.png"),
         dpi = 150,
         width = 20,
         height = 15,
@@ -459,283 +457,15 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
     ggsave(
         plot = final_plot,
-        filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), "TSNE_all_covariates_corrected.png"),
+        filename = here("QC", "results", "imgs", str_interp("SVA_ENCODE_${i}"), "TSNE_all_covariates_corrected.png"),
         dpi = 150,
         width = 20,
         height = 15,
     )
     
-}, mc.cores=15) 
+}, mc.cores = 20) 
 ```
 
-
-
-## **Batch correction using mdata**
-One very big downside of this method is, that all samples that have NA in any of the variables that are important
-for batch correction have to be dropped, because we simply do not to which group they belong.
-
-Nonetheless, try out how it looks like.
-```{r}
-# we will adjust for the following variables:
-covars_to_adjust <- c("age", "ethnicity", "batch1id", "pool", "oxldlset")
-# first we have to remove all samples from the dataset that have NA in any of the rows
-keep_sampleids <- colData(dds) %>%
-    data.frame() %>%
-    filter(!if_any(c(age, ethnicity, batch1id, pool, oxldlset), ~ . == "NA")) %>% pull(sampleid)
-
-dds_filtered <- dds[, dds$sampleid %in% keep_sampleids]
-
-# refactor the columns so NAs get removed
-factor_columns <- covars_to_adjust
-colData(dds_filtered)[factor_columns] <- lapply(colData(dds_filtered)[covars_to_adjust], factor)
-
-# use limmas removeBatchEffects to emulate what the linear model will eventually do.
-norm_data <- assay(vst(dds_filtered, blind = TRUE))
-mod <- model.matrix(~sampletype, colData(dds_filtered))
-
-# if we include pool, or oxldl in the model matrix, we introduce linear dependency
-mod0 <- model.matrix(~ batch1id + ethnicity + age, colData(dds_filtered))[, -1]
-dim(mod0)
-qr(mod0)$rank # -> is full rank
-adjusted_counts <- limma::removeBatchEffect(norm_data,
-    covariates = mod0, 
-    design = mod
-)
-
-# recalculate PCA with adjusted counts
-pca_data <- PCAtools::pca(adjusted_counts,
-    metadata = colData(dds_filtered),
-    removeVar = 0.4
-)
-pca_plot_df <- pca_data$rotated[, 1:20] %>%
-    rownames_to_column("sample_id") %>%
-    left_join(., mdata, by = c("sample_id" = "sampleid"))
-for (i in 1:20) {
-    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
-}
-
-##################
-# CALCULATE UMAP #
-##################
-umap_data <- umap::umap(t(adjusted_counts))
-umap_plot_df <- umap_data$layout %>%
-    data.frame() %>%
-    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
-    rownames_to_column("sampleid") %>% 
-    left_join(., mdata)
-
-###########
-# HEATMAP #
-###########
-association_output <- covar_correlation(
-    df = pca_plot_df,
-    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
-    components = paste0("PC", 1:15)
-)
-
-png(here("QC", "results", "imgs", "mdata_adjustment", "association_heatmap_corrected.png"),
-    res = 150, width = 9, height = 5.5, units = "in"
-)
-association_output$heatmap
-dev.off()
-
-#############
-# PCA PLOTS #
-#############
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
-
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_scatter(
-        df = pca_plot_df,
-        x_variable = "PC1",
-        y_variable = "PC2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
-        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
-    )
-
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
-})
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "mdata_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
-    dpi = 150,
-    width = 20,
-    height = 15,
-)
-
-##############
-# UMAP PLOTS #
-##############
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_scatter(
-        df = umap_plot_df,
-        x_variable = "UMAP1",
-        y_variable = "UMAP2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-    )
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
-})
-
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "mdata_adjustment","UMAP_all_covariates_corrected.png"),
-    dpi = 150,
-    width = 20,
-    height = 15,
-)
-```
-
-
-## **Batch correction using PCs**
-Out of interest, I also want to check what happens if we simply use the PCs instead of SVs.
-I think in that case we remove more biologically relevant information, because the conditions of interest
-are associated with the PCs but not with the SVs.
-
-Actually looks very good aswell. However, we remove alot of variation from the dataset... the PCs now only explain a small percentage 
-of the overall variation. 
-
-```{r}
-# recalculate the "original" PCA
-norm_data <- assay(vst(dds, blind = TRUE))
-dim(norm_data)
-
-# recalculate PCA with adjusted counts
-pca_data <- PCAtools::pca(norm_data,
-    metadata = colData(dds),
-    removeVar = 0.4
-)
-PCs <- pca_data$rotated[,1:15]
-colnames(PCs) <- paste0("PC", 1:15)
-tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("PCs")), PCs)
-
-# use limmas removeBatchEffects to emulate what the linear model will eventually do.
-mod <- model.matrix(~sampletype, tmp_mdata)
-# Create the formula dynamically
-formula <- as.formula(paste("~", paste0("PC", 1:15, collapse = " + ")))
-mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
-
-# adjust the counts using limma
-adjusted_counts <- limma::removeBatchEffect(norm_data,
-    covariates = mod0,
-    design = mod
-)
-
-# recalculate PCA with adjusted counts
-pca_data <- PCAtools::pca(adjusted_counts,
-    metadata = colData(dds),
-    removeVar = 0.4
-)
-pca_plot_df <- pca_data$rotated[, 1:20] %>%
-    rownames_to_column("sample_id") %>%
-    left_join(., mdata, by = c("sample_id" = "sampleid"))
-for (i in 1:20) {
-    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
-}
-
-##################
-# CALCULATE UMAP #
-##################
-umap_data <- umap::umap(t(adjusted_counts))
-umap_plot_df <- umap_data$layout %>%
-    data.frame() %>%
-    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
-    rownames_to_column("sampleid") %>% 
-    left_join(., mdata)
-
-###########
-# HEATMAP #
-###########
-association_output <- covar_correlation(
-    df = pca_plot_df,
-    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
-    components = paste0("PC", 1:15)
-)
-
-png(here("QC", "results", "imgs", "PC_adjustment", "association_heatmap_corrected.png"),
-    res = 150, width = 9, height = 5.5, units = "in"
-)
-association_output$heatmap
-dev.off()
-
-#############
-# PCA PLOTS #
-#############
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
-
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_scatter(
-        df = pca_plot_df,
-        x_variable = "PC1",
-        y_variable = "PC2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
-        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
-    )
-
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
-})
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "PC_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
-    dpi = 150,
-    width = 20,
-    height = 15,
-)
-
-##############
-# UMAP PLOTS #
-##############
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_scatter(
-        df = umap_plot_df,
-        x_variable = "UMAP1",
-        y_variable = "UMAP2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-    )
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
-})
-
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "PC_adjustment","UMAP_all_covariates_corrected.png"),
-    dpi = 150,
-    width = 20,
-    height = 15,
-)
-```
 
 
 ## **RUVseq**
@@ -744,7 +474,7 @@ We will use empirical control genes to adjust batches.
 However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
 https://support.bioconductor.org/p/9137741/
 
-```{r, eval=FALSE}
+```{r, eval=TRUE}
 # first pass differential expression to determine the empirical contorl genes, i.e. the genes that do not change
 dds0 <- DESeqDataSetFromMatrix(
     counts(dds, normalize=FALSE),
@@ -794,7 +524,7 @@ identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
 
 deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
     data.frame(results(init_deseq_res, contrast = contrasts[, i]))
-}, mc.cores=15)
+}, mc.cores = 20)
 
 names(deseq_results) <- colnames(contrasts)
 all(deseq_results$M0_comp == data.frame(M0_comp_res_conventional))
@@ -824,7 +554,7 @@ ggplot(data.frame(
 for (i in 5:20) {
     print(i)
     res <- RUVg(counts(dds), not_sig, k = i)
-    saveRDS(res, here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
+    saveRDS(res, here("QC", "results", str_interp("RUVg_ENCODE_${i}Ws.rds")))
 }
 ```
 
@@ -834,8 +564,8 @@ for (i in 5:20) {
 mdata <- colData(dds) %>% data.frame()
 columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
 dummy_ <- parallel::mclapply(5:20, function(i) {
-    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_W${i}")), showWarnings = FALSE)
-    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
+    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}")), showWarnings = FALSE)
+    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_ENCODE_${i}Ws.rds")))
     Ws <- RUVseq_res$W
     colnames(Ws) <- paste0("W", 1:i)
     mdata <- cbind(mdata %>% select(-contains("W")), data.frame(Ws))
@@ -849,7 +579,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         covars = covar_list,
         components = paste0("W", 1:i)
     )
-    png(here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    png(here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), "association_heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
     correlation_Ws$heatmap
     dev.off()
 
@@ -881,7 +611,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             )
         ggsave(
             plot = p,
-            filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), str_interp("W_associations_${x}.png")),
+            filename = here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), str_interp("W_associations_${x}.png")),
             dpi = 150,
             width = 15,
             height = 10,
@@ -920,7 +650,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         ggsave(
             plot = final_plot,
             filename = here(
-                "QC", "results", "imgs", str_interp("RUVseq_W${i}"),
+                "QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"),
                 str_interp("RUVseq_all_covariates_W${k[1]}_W${k[2]}.png")
             ),
             dpi = 150,
@@ -928,7 +658,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
             height = 15,
         )
     }
-}, mc.cores=15)
+}, mc.cores = 20)
 ```
 
 
@@ -936,8 +666,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 ```{r}
 vsd_data <- vst(dds, blind=TRUE)
 dummy_ <- parallel::mclapply(5:20, function(i) {
-    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_W${i}")), showWarnings = FALSE)
-    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
+    dir.create(here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}")), showWarnings = FALSE)
+    RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_ENCODE_${i}Ws.rds")))
     Ws <- RUVseq_res$W
     colnames(Ws) <- paste0("W", 1:i)
     tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("W")), Ws)
@@ -1010,7 +740,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         }
         ggsave(
             plot = enrichment_plot,
-            file = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), str_interp("ORA_PC${z}.png")),
+            file = here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), str_interp("ORA_PC${z}.png")),
             dpi=150, 
             width=10,
             height = 6
@@ -1049,7 +779,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         components = paste0("PC", 1:15)
     )
 
-    png(here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "association_heatmap_corrected.png"),
+    png(here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), "association_heatmap_corrected.png"),
         res = 150, width = 9, height = 5.5, units = "in"
     )
     association_output$heatmap
@@ -1091,7 +821,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         ggsave(
             plot = final_plot,
             filename = here(
-                "QC", "results", "imgs", str_interp("RUVseq_W${i}"),
+                "QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"),
                 str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
             dpi = 150,
@@ -1123,7 +853,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
     ggsave(
         plot = final_plot,
-        filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "UMAP_all_covariates_corrected.png"),
+        filename = here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), "UMAP_all_covariates_corrected.png"),
         dpi = 150,
         width = 20,
         height = 15,
@@ -1152,12 +882,12 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
     ggsave(
         plot = final_plot,
-        filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "TSNE_all_covariates_corrected.png"),
+        filename = here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), "TSNE_all_covariates_corrected.png"),
         dpi = 150,
         width = 20,
         height = 15,
     )
-}, mc.cores = 15)
+}, mc.cores = 20)
 ```
 
 
