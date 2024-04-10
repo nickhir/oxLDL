@@ -851,7 +851,6 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         return(p)
     })
 
-    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
     ggsave(
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("RUVseq_ENCODE_W${i}"), "UMAP_all_covariates_corrected.png"),
@@ -973,6 +972,68 @@ names(cor_result) <- unique(mdata$group)
 sapply(cor_result, min)
 ```
 
+### Test UMAP with rank based normal transformation
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_ENCODE_removed.rds"))
+sva_seq <- readRDS(here("QC", "results", "sva_ENCODE_12SVs.rds"))
+mdata <- colData(dds) %>% data.frame()
+tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:12)))
+norm_data <- assay(vst(dds, blind = TRUE))
+
+# do rank-based inverse normal transformation
+data <- c(10, 20, 30, 40, 50)
+
+# Function for rank-based inverse normal transformation
+# Function for rank-based inverse normal transformation
+rank_inv_normal <- function(x) {
+  qnorm((rank(x,na.last="keep")-0.5)/sum(!is.na(x)))
+}
+
+# Applying rank-based inverse normal transformation to the genes so that expression for each gene 
+# (i.e. of each feature or observation) is normally distributed across samples (i.e.variables)
+norm_data_inv_norm <- t(apply(norm_data, 1, rank_inv_normal))
+
+# regress effect of our covars
+mod <- model.matrix(~sampletype, tmp_mdata)
+formula <- as.formula(paste("~", paste0("SV", 1:12, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data_inv_norm,
+    covariates = mod0,
+    design = mod
+)
+
+umap_data <- umap::umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>%
+    left_join(., mdata)
+
+
+plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+# i cant see a big difference betten IVT and non IVT...
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+
+
+
+```
 
 
 ```{r}
