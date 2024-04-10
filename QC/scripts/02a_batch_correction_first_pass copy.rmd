@@ -34,6 +34,9 @@ Here we adjust the data where we have removed samples with extremely low counts 
  
 ```{r, load libraries}
 library(DESeq2)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
 library(magrittr)
 library(PCAtools)
 library(umap)
@@ -50,6 +53,27 @@ source(here("plot_theme.R"))
 source(here("helper_functions.R"))
 ```
 
+```{r}
+calc_pairwise_cor <- function(mat, outliers, condition){
+    keep_samples <- mdata %>% filter(sampletype == condition)  %>% pull(sampleid)
+    tmp_cnts <- mat[, keep_samples]
+    tmp_cnts <- tmp_cnts[, !colnames(tmp_cnts) %in% outliers]
+    pairwise_correlation <- cor(tmp_cnts, method = "spearman")
+    h <- Heatmap(pairwise_correlation,
+        show_row_names = F,
+        show_column_names = F,
+        show_row_dend = F,
+        show_column_dend = F,
+        col = col_fun,
+        name="R"
+    ) %>%
+        ggplotify::as.ggplot()
+    return(list(
+        heatmap = h,
+        correlation_matrix = pairwise_correlation
+    ))
+}
+```
 
 ## **SVA**
 First, we test [sva](https://bioconductor.org/packages/release/bioc/html/sva.html). 
@@ -1136,6 +1160,30 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 }, mc.cores = 15)
 ```
 
+
+### Conclusion
+
+**RUVseq**:
+Generally worse separation  after adjustment for state. 
+This of course is not necessary a bad thing. 
+After adjusting, batch 65609 and 61519 in UMAP is still very different.
+Even if we include 20 surrogate variables. 
+We have to go all the way up to 14 RUV variables for the big 65609 cluster to move close to the other samples. 
+
+
+**SVA**:
+Looks "stronger", i.e. more variance gets removed and separation  is cleaner.
+Also the separation of state is much cleaner. 
+SVA even manages to adjust batch 65609 and 61519 in UMAP when we move from 11 SVs to 12SVs.
+Before that, we see a very clear seperation in UMAP and TSNE.
+
+
+For both types of adjusting, the ORA reveals the exact same things regardless of number of SVs.
+14 RUVseq SVs actually remove less variation than 12 SVA SVs...
+
+I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq.
+
+
 ### Effect of library size
 Often recommendation to remove samples with less than 5M reads. However, I think that we do not have to do this in our case because
 samples with less reads are not different in the PC projection. 
@@ -1215,31 +1263,377 @@ density_scatter(
 )
 ```
 
-### Conclusion
 
-**RUVseq**:
-Generally worse separation  after adjustment for state. 
-This of course is not necessary a bad thing. 
-After adjusting, batch 65609 and 61519 in UMAP is still very different.
-Even if we include 20 surrogate variables. 
-We have to go all the way up to 14 RUV variables for the big 65609 cluster to move close to the other samples. 
+### ENCODE QC recommendations
+https://www.encodeproject.org/data-standards/rna-seq/long-rnas/
+"Replicate concordance: the gene level quantification should have a Spearman correlation of >0.9 between
+isogenic replicates and >0.8 between anisogenic replicates (i.e. replicates from different donors)."
+
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+sva_seq <- readRDS(here("QC", "results", "sva_12SVs.rds"))
+dds <- estimateSizeFactors(dds)
+mdata <- colData(dds) %>% data.frame()
+tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:12)))
+norm_data <- assay(vst(dds, blind = TRUE))
+
+mod <- model.matrix(~sampletype, tmp_mdata)
+formula <- as.formula(paste("~", paste0("SV", 1:12, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    covariates = mod0,
+    design = mod
+)
+
+# we do have some isogenic replicates:
+technical_replicate_samples <- mdata %>%
+    group_by(samplename) %>%
+    mutate(n = n()) %>%
+    filter(n == 2) %>%
+    arrange(samplename) %>% 
+    pull(sampleid)
+
+pairings <- lapply(1:(length(technical_replicate_samples)/2), function(x) {
+    c(2 * x - 1, 2 * x)
+})
+pairwise_cor <- sapply(pairings, function(i){
+    tmp_samples <- technical_replicate_samples[i]
+    cor(adjusted_counts[, tmp_samples[1]], adjusted_counts[, tmp_samples[2]], method="spearman")
+})
+table(pairwise_cor > 0.9)
+# anisogenic replicates
+mdata <- mdata %>%
+    mutate(group = paste(state, oxldl, sep="_")) 
+
+cor_result <- lapply(unique(mdata$group), function(x){
+    samples <- mdata %>%
+        filter(group == x)  %>% 
+        pull(sampleid)
+
+    tmp_cnts <- adjusted_counts[, samples]
+    cor_map <- cor(tmp_cnts, method = "spearman")
+    return(cor_map)
+})
+names(cor_result) <- unique(mdata$group)
+
+# some have very low correlation.
+sapply(cor_result, min)
+```
 
 
-**SVA**:
-Looks "stronger", i.e. more variance gets removed and separation  is cleaner.
-Also the separation of state is much cleaner. 
-SVA even manages to adjust batch 65609 and 61519 in UMAP when we move from 11 SVs to 12SVs.
-Before that, we see a very clear seperation in UMAP and TSNE.
+#### M0_0
+```{r}
+col_fun = colorRamp2(c(0.5, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M0_0,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+
+h <- draw(h)
+outliers_M0_0 <- column_order(draw(h))$`1`
+outliers_M0_0 <- rownames(cor_result$M0_0)[outliers_M0_0]
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_0)],
+    metadata = colData(dds)[rownames(cor_result$M0_0),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+ggplot(
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_0, "MO_0 outlier", "normal")),
+    aes(x = PC1, y = PC2, color = outlier)
+) +
+    geom_point(size = 3.5) +
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M0_0), 
+    aes(x = PC1, y = PC2, label = sample_id), 
+    inherit.aes = F) +
+    theme_Publication()+
+    chameleon::scale_color_chameleon()
+
+# compare the libsize
+ggplot(
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_0, "MO_0 outlier", "normal")),
+    aes(x = libsize, y = ..scaled.., fill = outlier)
+) +
+    geom_density(alpha = 0.5) +
+    chameleon::scale_fill_chameleon() +
+    theme_Publication_side()
+
+# -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
+# using a fixed cutoff. 
+M0_0_filtered <- calc_pairwise_cor(
+    mat = adjusted_counts,
+    outliers = outliers_M0_0,
+    condition ="M0_0"
+)
+M0_0_filtered$correlation_matrix %>% min()
+```
 
 
-For both types of adjusting, the ORA reveals the exact same things regardless of number of SVs.
-14 RUVseq SVs actually remove less variation than 12 SVA SVs...
 
-I think I will stick to the 12 SVs from SVA for now but check if main conclusions are the same if we use 14 RUVseq.
+#### M2_0
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M2_0,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M2_0 <- apply(cor_result$M2_0, 2, mean) %>% which.min() %>% names()
+
+
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_0)],
+    metadata = colData(dds)[rownames(cor_result$M2_0),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+ggplot(
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M2_0, "MO_0 outlier", "normal")),
+    aes(x = PC1, y = PC2, color = outlier)
+) +
+    geom_point(size = 3.5) +
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M2_0), 
+    aes(x = PC1, y = PC2, label = sample_id), 
+    inherit.aes = F) +
+    theme_Publication()+
+    chameleon::scale_color_chameleon()
+
+
+outliers_M2_0_libsize <- mdata %>%
+    filter(sampleid == outliers_M2_0) %>%
+    pull(libsize)
+
+# libsize is 0.51 percentile --> actually the 6th smalles. 
+percentile <- ecdf(mdata$libsize)(outliers_M2_0_libsize) * 100
+
+# -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
+# using a fixed cutoff. 
+M2_0_filtered <- calc_pairwise_cor(
+    mat = adjusted_counts,
+    outliers = outliers_M2_0,
+    condition ="M2_0"
+)
+M2_0_filtered$correlation_matrix %>% min()
+```
+
+
+#### M0_100
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M0_100,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M0_100 <- apply(cor_result$M0_100, 2, mean) %>% which.min() %>% names()
+
+
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_100)],
+    metadata = colData(dds)[rownames(cor_result$M0_100),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+ggplot(
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_100, "MO_0 outlier", "normal")),
+    aes(x = PC1, y = PC2, color = outlier)
+) +
+    geom_point(size = 3.5) +
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M0_100), 
+    aes(x = PC1, y = PC2, label = sample_id), 
+    inherit.aes = F) +
+    theme_Publication()+
+    chameleon::scale_color_chameleon()
+
+
+outliers_M0_100_libsize <- mdata %>%
+    filter(sampleid == outliers_M0_100) %>%
+    pull(libsize)
+
+# libsize is 0.68 percentile --> actually the 8th smalles. 
+percentile <- ecdf(mdata$libsize)(outliers_M0_100_libsize) * 100
+
+# -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
+# using a fixed cutoff. 
+M0_100_filtered <- calc_pairwise_cor(
+    mat = adjusted_counts,
+    outliers = outliers_M0_100,
+    condition ="M0_oxLDL"
+)
+M0_100_filtered$correlation_matrix %>% min()
+```
+
+
+
+#### M1_100
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M1_100,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M1_100 <- apply(cor_result$M1_100, 2, mean) %>% which.min() %>% names()
+
+
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_100)],
+    metadata = colData(dds)[rownames(cor_result$M1_100),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+ggplot(
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M1_100, "MO_0 outlier", "normal")),
+    aes(x = PC1, y = PC2, color = outlier)
+) +
+    geom_point(size = 3.5) +
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M1_100), 
+    aes(x = PC1, y = PC2, label = sample_id), 
+    inherit.aes = F) +
+    theme_Publication()+
+    chameleon::scale_color_chameleon()
+
+
+outliers_M1_100_libsize <- mdata %>%
+    filter(sampleid == outliers_M1_100) %>%
+    pull(libsize)
+
+# libsize is 0.25 percentile --> actually the 3th smalles. 
+percentile <- ecdf(mdata$libsize)(outliers_M1_100_libsize) * 100
+
+# -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
+# using a fixed cutoff. 
+M1_100_filtered <- calc_pairwise_cor(
+    mat = adjusted_counts,
+    outliers = outliers_M1_100,
+    condition ="M1_oxLDL"
+)
+M1_100_filtered$correlation_matrix %>% min()
+```
+
+
+
+#### M2_100
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M2_100,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# This looks just fine. No outliers
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_100)],
+    metadata = colData(dds)[rownames(cor_result$M2_100),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+ggplot(pca_plot_df_subset, aes(x = PC1, y = PC2, color="set")) +
+    geom_point(size = 3.5) +
+    theme_Publication() +
+    chameleon::scale_color_chameleon()
+ 
+```
+
+
+### Bringing it all together
+```{r}
+outliers <- c(
+    outliers_M0_0, outliers_M1_0, outliers_M2_0,
+    outliers_M0_100, outliers_M1_100
+)
+
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds_filtered <- dds[, !dds$sampleid  %in% outliers]
+saveRDS(dds_filtered, here("QC", "results", "dds_libsize_outliers_ENCODE_removed.rds"))
+
+
+```
+
+
 
 ```{r}
 sessionInfo()
 ```
+
 
 
 
