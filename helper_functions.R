@@ -283,3 +283,49 @@ shorten_strings <- function(input_strings, n) {
   shortened <- paste0(shortened, ifelse(nchar(input_strings) > n, "...", ""))
   return(shortened)
 }
+
+
+
+#' Create a very simple bar plot
+#'
+#' @param input_vector A vector containing the elements to be plotted.
+#' @param include_n A logical value indicating whether to include frequency labels on the plot (default is FALSE).
+#' 
+#' @return A ggplot bar plot showing the frequency of elements in the input vector.
+#' 
+#' @details 
+#' This function takes an input vector and creates a bar plot using ggplot2 to visualize the frequency of each element in the vector. 
+#' If include_n is set to TRUE, the function will also display the frequency counts on top of each bar.
+#' 
+#' @examples
+#' plot_column_table(c(1, 2, 2, 3, 3, 3), include_n = TRUE)
+
+plot_column_table <- function(input_vector, include_n=FALSE) {
+  # Convert input vector to data frame
+  data_df <- data.frame(values = input_vector)
+  
+  # Create the ggplot barplot
+  plot <- ggplot(data_df, aes(x = values)) +
+      geom_bar(fill="#7a7a7a", color = "black") +
+      labs(title = "Frequency of Elements", x = "Elements", y = "Frequency") +
+      scale_y_continuous(expand = c(0.01, 0)) +
+      theme_Publication()+
+      chameleon::scale_fill_chameleon()
+  
+  if(include_n){
+    data_summary <- data_df %>%
+        group_by(values) %>%
+        summarise(count = n())
+    
+    max_count <- max(data_summary$count)
+    y_max <- max_count*1.25   # Increase by 20% to add a buffer
+
+    plot <- plot +
+        geom_text(
+            data = data_summary, aes(label = count, y = count),
+            vjust = -0.5, color = "black", size = 4
+        )+
+        scale_y_continuous(expand = c(0.01, 0), limits=c(0,y_max))
+  }
+  return(plot)
+}

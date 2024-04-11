@@ -17,6 +17,7 @@ editor_options:
   chunk_output_type: console
 ---
 
+# WE ARE NOT FOLLOWING THIS APPROACH ANYMORE; SCRIPT MIGHT NOT WORK BECAUSE MDATA COLUMNS WERE RENAMED
 
 
 ```{r setup, include=FALSE}
@@ -27,6 +28,7 @@ knitr::opts_chunk$set(
 ```
 
 ## **Introduction**
+
 We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
 In this script, we will try out and evaluate different methods to correct for that. 
 
@@ -69,7 +71,7 @@ dds <- readRDS(here("QC", "results", "dds_libsize_5e6_removed.rds"))
 # that were normalized with respect to library size -> vst transformed data
 # at least that is the data that is used in the example of the function so we will do the same.
 # this runs very long.
-mod <- model.matrix(~sampletype, colData(dds))
+mod <- model.matrix(~group, colData(dds))
 mod0 <- model.matrix(~1, colData(dds))
 
 # this returns 54 which is kind of is definitely way too many...
@@ -82,14 +84,14 @@ norm_counts  <- counts(dds, normalized = TRUE)
 
 
 # runs long, even with parallization
-dummy_ <- parallel::mclapply(5:20, function(i) {
-    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-    saveRDS(svseq, here("QC", "results", str_interp("sva_libsize_5e6_${i}SVs.rds")))
-}, mc.cores = 20)
+# dummy_ <- parallel::mclapply(5:20, function(i) {
+#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+#     saveRDS(svseq, here("QC", "results", str_interp("sva_libsize_5e6_${i}SVs.rds")))
+# }, mc.cores = 20)
 
 
 # do a test if this is the same -> they are. correlation > 0.99 for all SVs
-# mod <- model.matrix(~ state + oxldl + state:oxldl, colData(dds))
+# mod <- model.matrix(~ state + condition + state:condition, colData(dds))
 # mod0 <- model.matrix(~1, colData(dds))
 
 # SV12_test <- svaseq(norm_counts, mod, mod0, n.sv = 12)
@@ -104,7 +106,7 @@ Still difficult to exactly determine what SV1 corresponds to. SV2 very clearly b
 Big difference is that none of the SVs is associated with our conditions of interest which is good.
 ```{r}
 mdata <- colData(dds) %>% data.frame()
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
 dummy_ <- parallel::mclapply(5:20, function(i) {
     dir.create(here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}")), showWarnings = FALSE)
@@ -116,7 +118,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     ###########
     # HEATMAP #
     ###########
-    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize")
     correlation_SVs <- covar_correlation(
         df = mdata,
         covars = covar_list,
@@ -197,8 +199,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
                 str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
 }, mc.cores = 20)
@@ -225,7 +227,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
 
     # use limmas removeBatchEffects to emulate what the linear model will eventually do.
     norm_data <- assay(vsd_data)
-    mod <- model.matrix(~sampletype, tmp_mdata)
+    mod <- model.matrix(~group, tmp_mdata)
     # Create the formula dynamically
     formula <- as.formula(paste("~", paste0("SV", 1:i, collapse = " + ")))
     mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -328,7 +330,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     ###########
     association_output <- covar_correlation(
         df = pca_plot_df,
-        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
         components = paste0("PC", 1:15)
     )
 
@@ -341,7 +343,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     #############
     # PCA PLOTS #
     #############
-    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+    columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
     # create PC intervals
     PC_pairings <- lapply(1:floor(i/2), function(x) {
@@ -378,8 +380,8 @@ dummy_ <- parallel::mclapply(5:20, function(i){
                 str_interp("SV${i}_PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
 
@@ -408,8 +410,8 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), "SV${i}_UMAP_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
     
     ##############
@@ -437,8 +439,8 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("SVA_libsize_5e6_${i}"), "SV${i}_TSNE_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
     
 }, mc.cores = 20) 
@@ -451,12 +453,12 @@ We will use empirical control genes to adjust batches.
 However, RUVSeq does have steps to deal with sequencing depth, see vignette section 2.1, the fourth code chunk. So if you are following the RUVSeq workflow including that step you can provide original counts, not scaled counts.
 https://support.bioconductor.org/p/9137741/
 
-```{r, eval=TRUE}
+```{r, eval=FALSE}
 # first pass differential expression to determine the empirical contorl genes, i.e. the genes that do not change
 dds0 <- DESeqDataSetFromMatrix(
     counts(dds, normalize=FALSE),
     colData(dds),
-    ~ 0 + sampletype
+    ~ 0 + group
 )
 init_deseq_res <- DESeq(dds0)
 
@@ -464,8 +466,8 @@ init_deseq_res <- DESeq(dds0)
 # we want to know difference between the different macrophage subtype of the same condition and
 # also differnces of the same macrophage subtype
 
-design <- model.matrix(~ 0 + sampletype, colData(dds0))
-#colnames(design) <- str_remove_all(colnames(design), "sampletype")
+design <- model.matrix(~ 0 + group, colData(dds0))
+#colnames(design) <- str_remove_all(colnames(design), "group")
 contrasts <- limma::makeContrasts(
     M0_comp = sampletypeM0_oxLDL - sampletypeM0_0,
     M1_comp = sampletypeM1_oxLDL - sampletypeM1_0,
@@ -488,15 +490,15 @@ contrasts <- limma::makeContrasts(
 rownames(contrasts) == resultsNames(init_deseq_res)
 # a few sanity checks
 M2_comp_res <- results(init_deseq_res, contrast = contrasts[,3])
-M2_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_oxLDL", "M2_0"))
+M2_comp_res_conventional <- results(init_deseq_res, contrast=c("group", "M2_oxLDL", "M2_0"))
 identical(data.frame(M2_comp_res), data.frame(M2_comp_res_conventional))
 
 M0_comp_res <- results(init_deseq_res, contrast = contrasts[,1])
-M0_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M0_oxLDL", "M0_0"))
+M0_comp_res_conventional <- results(init_deseq_res, contrast=c("group", "M0_oxLDL", "M0_0"))
 identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
 
 M2_M1_comp_res <- results(init_deseq_res, contrast = contrasts[,9])
-M2_M1_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_0", "M1_0"))
+M2_M1_comp_res_conventional <- results(init_deseq_res, contrast=c("group", "M2_0", "M1_0"))
 identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
 
 deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
@@ -541,7 +543,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 ### **Try and find out what the Ws from RUVseq correspond to**
 ```{r}
 mdata <- colData(dds) %>% data.frame()
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 dummy_ <- parallel::mclapply(5:20, function(i) {
     dir.create(here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}")), showWarnings = FALSE)
     RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_libsize_5e6_${i}Ws.rds")))
@@ -552,7 +554,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     ###########
     # HEATMAP #
     ###########
-    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize")
     correlation_Ws <- covar_correlation(
         df = mdata,
         covars = covar_list,
@@ -633,8 +635,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
                 str_interp("RUVseq_all_covariates_W${k[1]}_W${k[2]}.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
 }, mc.cores = 20)
@@ -653,7 +655,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 
     # use limmas removeBatchEffects to emulate what the linear model will eventually do.
     norm_data <- assay(vsd_data)
-    mod <- model.matrix(~sampletype, tmp_mdata)
+    mod <- model.matrix(~group, tmp_mdata)
     # Create the formula dynamically
     formula <- as.formula(paste("~", paste0("W", 1:i, collapse = " + ")))
     mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -754,7 +756,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     ###########
     association_output <- covar_correlation(
         df = pca_plot_df,
-        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
         components = paste0("PC", 1:15)
     )
 
@@ -767,7 +769,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     #############
     # PCA PLOTS #
     #############
-    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+    columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
     # create PC intervals
     PC_pairings <- lapply(1:floor(i / 2), function(x) {
@@ -804,8 +806,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
                 str_interp("W${i}_PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
 
@@ -834,8 +836,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), "W${i}_UMAP_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
 
     ##############
@@ -863,11 +865,12 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("RUVseq_libsize_5e6_W${i}"), "W${i}_TSNE_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
 }, mc.cores = 20)
 ```
+
 ### Conclusion
 
 **SVA**:
@@ -890,7 +893,7 @@ mdata <- colData(dds) %>% data.frame()
 tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:17)))
 norm_data <- assay(vst(dds, blind = TRUE))
 
-mod <- model.matrix(~sampletype, tmp_mdata)
+mod <- model.matrix(~group, tmp_mdata)
 # Create the formula dynamically
 formula <- as.formula(paste("~", paste0("SV", 1:17, collapse = " + ")))
 mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -927,7 +930,7 @@ table(pairwise_cor > 0.9)
 
 # anisogenic replicates
 mdata <- mdata %>%
-    mutate(group = paste(state, oxldl, sep="_")) 
+    mutate(group = paste(state, condition, sep="_")) 
 
 cor_result <- lapply(unique(mdata$group), function(x){
     samples <- mdata %>%

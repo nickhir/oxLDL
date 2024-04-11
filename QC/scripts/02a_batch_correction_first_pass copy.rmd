@@ -54,8 +54,8 @@ source(here("helper_functions.R"))
 ```
 
 ```{r}
-calc_pairwise_cor <- function(mat, outliers, condition){
-    keep_samples <- mdata %>% filter(sampletype == condition)  %>% pull(sampleid)
+calc_pairwise_cor <- function(mat, outliers, condition_){
+    keep_samples <- mdata %>% dplyr::filter(group == condition_) %>% pull(sampleid)
     tmp_cnts <- mat[, keep_samples]
     tmp_cnts <- tmp_cnts[, !colnames(tmp_cnts) %in% outliers]
     pairwise_correlation <- cor(tmp_cnts, method = "spearman")
@@ -93,7 +93,7 @@ dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
 # that were normalized with respect to library size -> vst transformed data
 # at least that is the data that is used in the example of the function so we will do the same.
 # this runs very long.
-mod <- model.matrix(~sampletype, colData(dds))
+mod <- model.matrix(~group, colData(dds))
 mod0 <- model.matrix(~1, colData(dds))
 
 # this returns 54 which is kind of is definitely way too many...
@@ -113,7 +113,7 @@ norm_counts  <- counts(dds, normalized = TRUE)
 
 
 # do a test if this is the same -> they are. correlation > 0.99 for all SVs
-# mod <- model.matrix(~ state + oxldl + state:oxldl, colData(dds))
+# mod <- model.matrix(~ state + condition + state:condition, colData(dds))
 # mod0 <- model.matrix(~1, colData(dds))
 
 # SV12_test <- svaseq(norm_counts, mod, mod0, n.sv = 12)
@@ -128,7 +128,7 @@ Still difficult to exactly determine what SV1 corresponds to. SV2 very clearly b
 Big difference is that none of the SVs is associated with our conditions of interest which is good.
 ```{r}
 mdata <- colData(dds) %>% data.frame()
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
 dummy_ <- parallel::mclapply(5:20, function(i) {
     dir.create(here("QC", "results", "imgs", str_interp("SVA_${i}")), showWarnings = FALSE)
@@ -140,7 +140,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     ###########
     # HEATMAP #
     ###########
-    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize")
     correlation_SVs <- covar_correlation(
         df = mdata,
         covars = covar_list,
@@ -221,11 +221,11 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
                 str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
-}, mc.cores = 15)
+}, mc.cores = 20)
 
 ```
 
@@ -249,7 +249,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
 
     # use limmas removeBatchEffects to emulate what the linear model will eventually do.
     norm_data <- assay(vsd_data)
-    mod <- model.matrix(~sampletype, tmp_mdata)
+    mod <- model.matrix(~group, tmp_mdata)
     # Create the formula dynamically
     formula <- as.formula(paste("~", paste0("SV", 1:i, collapse = " + ")))
     mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -352,7 +352,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     ###########
     association_output <- covar_correlation(
         df = pca_plot_df,
-        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
         components = paste0("PC", 1:15)
     )
 
@@ -365,7 +365,7 @@ dummy_ <- parallel::mclapply(5:20, function(i){
     #############
     # PCA PLOTS #
     #############
-    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+    columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
     # create PC intervals
     PC_pairings <- lapply(1:floor(i/2), function(x) {
@@ -402,8 +402,8 @@ dummy_ <- parallel::mclapply(5:20, function(i){
                 str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
 
@@ -432,8 +432,8 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), "UMAP_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
     
     ##############
@@ -461,146 +461,13 @@ dummy_ <- parallel::mclapply(5:20, function(i){
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("SVA_${i}"), "TSNE_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
     
-}, mc.cores=15) 
+}, mc.cores = 20) 
 ```
 
-
-
-## **Batch correction using mdata**
-One very big downside of this method is, that all samples that have NA in any of the variables that are important
-for batch correction have to be dropped, because we simply do not to which group they belong.
-
-Nonetheless, try out how it looks like.
-```{r}
-# we will adjust for the following variables:
-covars_to_adjust <- c("age", "ethnicity", "batch1id", "pool", "oxldlset")
-# first we have to remove all samples from the dataset that have NA in any of the rows
-keep_sampleids <- colData(dds) %>%
-    data.frame() %>%
-    filter(!if_any(c(age, ethnicity, batch1id, pool, oxldlset), ~ . == "NA")) %>% pull(sampleid)
-
-dds_filtered <- dds[, dds$sampleid %in% keep_sampleids]
-
-# refactor the columns so NAs get removed
-factor_columns <- covars_to_adjust
-colData(dds_filtered)[factor_columns] <- lapply(colData(dds_filtered)[covars_to_adjust], factor)
-
-# use limmas removeBatchEffects to emulate what the linear model will eventually do.
-norm_data <- assay(vst(dds_filtered, blind = TRUE))
-mod <- model.matrix(~sampletype, colData(dds_filtered))
-
-# if we include pool, or oxldl in the model matrix, we introduce linear dependency
-mod0 <- model.matrix(~ batch1id + ethnicity + age, colData(dds_filtered))[, -1]
-dim(mod0)
-qr(mod0)$rank # -> is full rank
-adjusted_counts <- limma::removeBatchEffect(norm_data,
-    covariates = mod0, 
-    design = mod
-)
-
-# recalculate PCA with adjusted counts
-pca_data <- PCAtools::pca(adjusted_counts,
-    metadata = colData(dds_filtered),
-    removeVar = 0.4
-)
-pca_plot_df <- pca_data$rotated[, 1:20] %>%
-    rownames_to_column("sample_id") %>%
-    left_join(., mdata, by = c("sample_id" = "sampleid"))
-for (i in 1:20) {
-    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
-}
-
-##################
-# CALCULATE UMAP #
-##################
-umap_data <- umap::umap(t(adjusted_counts))
-umap_plot_df <- umap_data$layout %>%
-    data.frame() %>%
-    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
-    rownames_to_column("sampleid") %>% 
-    left_join(., mdata)
-
-###########
-# HEATMAP #
-###########
-association_output <- covar_correlation(
-    df = pca_plot_df,
-    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
-    components = paste0("PC", 1:15)
-)
-
-png(here("QC", "results", "imgs", "mdata_adjustment", "association_heatmap_corrected.png"),
-    res = 150, width = 9, height = 5.5, units = "in"
-)
-association_output$heatmap
-dev.off()
-
-#############
-# PCA PLOTS #
-#############
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
-
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_scatter(
-        df = pca_plot_df,
-        x_variable = "PC1",
-        y_variable = "PC2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-        xlab = paste0("PC1: ", round(pca_plot_df$PC1_explained_var[1], 2), "% variance"),
-        ylab = paste0("PC2: ", round(pca_plot_df$PC2_explained_var[1], 2), "% variance")
-    )
-
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
-})
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "mdata_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
-    dpi = 150,
-    width = 20,
-    height = 15,
-)
-
-##############
-# UMAP PLOTS #
-##############
-plots <- lapply(columns_to_plot, function(x) {
-    p <- density_scatter(
-        df = umap_plot_df,
-        x_variable = "UMAP1",
-        y_variable = "UMAP2",
-        color_by = x,
-        density_plot_ratio = 0.15,
-        pt_size = 1.2,
-    )
-    p <- p +
-        plot_annotation(
-            title = x,
-            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
-        )
-    return(p)
-})
-
-final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
-ggsave(
-    plot = final_plot,
-    filename = here("QC", "results", "imgs", "mdata_adjustment","UMAP_all_covariates_corrected.png"),
-    dpi = 150,
-    width = 20,
-    height = 15,
-)
-```
 
 
 ## **Batch correction using PCs**
@@ -626,7 +493,7 @@ colnames(PCs) <- paste0("PC", 1:15)
 tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("PCs")), PCs)
 
 # use limmas removeBatchEffects to emulate what the linear model will eventually do.
-mod <- model.matrix(~sampletype, tmp_mdata)
+mod <- model.matrix(~group, tmp_mdata)
 # Create the formula dynamically
 formula <- as.formula(paste("~", paste0("PC", 1:15, collapse = " + ")))
 mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -664,7 +531,7 @@ umap_plot_df <- umap_data$layout %>%
 ###########
 association_output <- covar_correlation(
     df = pca_plot_df,
-    covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id"),
+    covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id"),
     components = paste0("PC", 1:15)
 )
 
@@ -677,7 +544,7 @@ dev.off()
 #############
 # PCA PLOTS #
 #############
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
 plots <- lapply(columns_to_plot, function(x) {
     p <- density_scatter(
@@ -703,8 +570,8 @@ ggsave(
     plot = final_plot,
     filename = here("QC", "results", "imgs", "PC_adjustment","PCA_all_covariates_PC1_PC2_corrected.png"),
     dpi = 150,
-    width = 20,
-    height = 15,
+    width = 18,
+    height = 11.5,
 )
 
 ##############
@@ -732,8 +599,8 @@ ggsave(
     plot = final_plot,
     filename = here("QC", "results", "imgs", "PC_adjustment","UMAP_all_covariates_corrected.png"),
     dpi = 150,
-    width = 20,
-    height = 15,
+    width = 18,
+    height = 11.5,
 )
 ```
 
@@ -749,7 +616,7 @@ https://support.bioconductor.org/p/9137741/
 dds0 <- DESeqDataSetFromMatrix(
     counts(dds, normalize=FALSE),
     colData(dds),
-    ~ 0 + sampletype
+    ~ 0 + group
 )
 init_deseq_res <- DESeq(dds0)
 
@@ -757,8 +624,8 @@ init_deseq_res <- DESeq(dds0)
 # we want to know difference between the different macrophage subtype of the same condition and
 # also differnces of the same macrophage subtype
 
-design <- model.matrix(~ 0 + sampletype, colData(dds0))
-#colnames(design) <- str_remove_all(colnames(design), "sampletype")
+design <- model.matrix(~ 0 + group, colData(dds0))
+#colnames(design) <- str_remove_all(colnames(design), "group")
 contrasts <- limma::makeContrasts(
     M0_comp = sampletypeM0_oxLDL - sampletypeM0_0,
     M1_comp = sampletypeM1_oxLDL - sampletypeM1_0,
@@ -781,20 +648,20 @@ contrasts <- limma::makeContrasts(
 rownames(contrasts) == resultsNames(init_deseq_res)
 # a few sanity checks
 M2_comp_res <- results(init_deseq_res, contrast = contrasts[,3])
-M2_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_oxLDL", "M2_0"))
+M2_comp_res_conventional <- results(init_deseq_res, contrast=c("group", "M2_oxLDL", "M2_ctrl"))
 identical(data.frame(M2_comp_res), data.frame(M2_comp_res_conventional))
 
 M0_comp_res <- results(init_deseq_res, contrast = contrasts[,1])
-M0_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M0_oxLDL", "M0_0"))
+M0_comp_res_conventional <- results(init_deseq_res, contrast=c("group", "M0_oxLDL", "M0_ctrl"))
 identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
 
 M2_M1_comp_res <- results(init_deseq_res, contrast = contrasts[,9])
-M2_M1_comp_res_conventional <- results(init_deseq_res, contrast=c("sampletype", "M2_0", "M1_0"))
+M2_M1_comp_res_conventional <- results(init_deseq_res, contrast=c("group", "M2_ctrl", "M1_ctrl"))
 identical(data.frame(M0_comp_res), data.frame(M0_comp_res_conventional))
 
 deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){
     data.frame(results(init_deseq_res, contrast = contrasts[, i]))
-}, mc.cores=15)
+}, mc.cores = 20)
 
 names(deseq_results) <- colnames(contrasts)
 all(deseq_results$M0_comp == data.frame(M0_comp_res_conventional))
@@ -832,7 +699,7 @@ for (i in 5:20) {
 ### **Try and find out what the Ws from RUVseq correspond to**
 ```{r}
 mdata <- colData(dds) %>% data.frame()
-columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 dummy_ <- parallel::mclapply(5:20, function(i) {
     dir.create(here("QC", "results", "imgs", str_interp("RUVseq_W${i}")), showWarnings = FALSE)
     RUVseq_res <- readRDS(here("QC", "results", str_interp("RUVg_${i}Ws.rds")))
@@ -843,7 +710,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     ###########
     # HEATMAP #
     ###########
-    covar_list = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize")
+    covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize")
     correlation_Ws <- covar_correlation(
         df = mdata,
         covars = covar_list,
@@ -924,11 +791,11 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
                 str_interp("RUVseq_all_covariates_W${k[1]}_W${k[2]}.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
-}, mc.cores=15)
+}, mc.cores = 20)
 ```
 
 
@@ -944,7 +811,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
 
     # use limmas removeBatchEffects to emulate what the linear model will eventually do.
     norm_data <- assay(vsd_data)
-    mod <- model.matrix(~sampletype, tmp_mdata)
+    mod <- model.matrix(~group, tmp_mdata)
     # Create the formula dynamically
     formula <- as.formula(paste("~", paste0("W", 1:i, collapse = " + ")))
     mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -1045,7 +912,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     ###########
     association_output <- covar_correlation(
         df = pca_plot_df,
-        covars = c("pool", "state", "oxldl", "oxldlset", "set", "ethnicity", "age", "batch1id", "libsize"),
+        covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
         components = paste0("PC", 1:15)
     )
 
@@ -1058,7 +925,7 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
     #############
     # PCA PLOTS #
     #############
-    columns_to_plot <- c("state", "oxldl", "set", "ethnicity", "pool", "age", "batch1id")
+    columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
 
     # create PC intervals
     PC_pairings <- lapply(1:floor(i / 2), function(x) {
@@ -1095,8 +962,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
                 str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
             ),
             dpi = 150,
-            width = 20,
-            height = 15,
+            width = 18,
+            height = 11.5,
         )
     }
 
@@ -1125,8 +992,8 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "UMAP_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
 
     ##############
@@ -1154,10 +1021,10 @@ dummy_ <- parallel::mclapply(5:20, function(i) {
         plot = final_plot,
         filename = here("QC", "results", "imgs", str_interp("RUVseq_W${i}"), "TSNE_all_covariates_corrected.png"),
         dpi = 150,
-        width = 20,
-        height = 15,
+        width = 18,
+        height = 11.5,
     )
-}, mc.cores = 15)
+}, mc.cores = 20)
 ```
 
 
@@ -1226,7 +1093,7 @@ density_scatter(
 
 # now adjust counts
 
-mod <- model.matrix(~sampletype,tmp_mdata)
+mod <- model.matrix(~group,tmp_mdata)
 # Create the formula dynamically
 formula <- as.formula(paste("~", paste0("SV", 1:12, collapse = " + ")))
 mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -1277,7 +1144,7 @@ mdata <- colData(dds) %>% data.frame()
 tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:12)))
 norm_data <- assay(vst(dds, blind = TRUE))
 
-mod <- model.matrix(~sampletype, tmp_mdata)
+mod <- model.matrix(~group, tmp_mdata)
 formula <- as.formula(paste("~", paste0("SV", 1:12, collapse = " + ")))
 mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
 
@@ -1289,6 +1156,7 @@ adjusted_counts <- limma::removeBatchEffect(norm_data,
 
 # we do have some isogenic replicates:
 technical_replicate_samples <- mdata %>%
+    mutate(samplename = paste(line, group, sep = "_")) %>%
     group_by(samplename) %>%
     mutate(n = n()) %>%
     filter(n == 2) %>%
@@ -1305,7 +1173,7 @@ pairwise_cor <- sapply(pairings, function(i){
 table(pairwise_cor > 0.9)
 # anisogenic replicates
 mdata <- mdata %>%
-    mutate(group = paste(state, oxldl, sep="_")) 
+    mutate(group = paste(state, condition, sep="_")) 
 
 cor_result <- lapply(unique(mdata$group), function(x){
     samples <- mdata %>%
@@ -1323,10 +1191,10 @@ sapply(cor_result, min)
 ```
 
 
-#### M0_0
+#### M0_ctrl
 ```{r}
 col_fun = colorRamp2(c(0.5, 1), c("blue", "red"))
-h <- Heatmap(cor_result$M0_0,
+h <- Heatmap(cor_result$M0_ctrl,
     show_row_names = F,
     show_column_names = F,
     show_row_dend = F,
@@ -1338,12 +1206,12 @@ h <- Heatmap(cor_result$M0_0,
 )
 
 h <- draw(h)
-outliers_M0_0 <- column_order(draw(h))$`1`
-outliers_M0_0 <- rownames(cor_result$M0_0)[outliers_M0_0]
+outliers_M0_ctrl <- column_order(draw(h))$`1`
+outliers_M0_ctrl <- rownames(cor_result$M0_ctrl)[outliers_M0_ctrl]
 
 # recalculate PCA with adjusted counts
-pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_0)],
-    metadata = colData(dds)[rownames(cor_result$M0_0),],
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M0_ctrl),],
     removeVar = 0.4
 )
 pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
@@ -1355,11 +1223,11 @@ for (i in 1:20) {
 }
 
 ggplot(
-    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_0, "MO_0 outlier", "normal")),
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_ctrl, "MO_0 outlier", "normal")),
     aes(x = PC1, y = PC2, color = outlier)
 ) +
     geom_point(size = 3.5) +
-    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M0_0), 
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M0_ctrl), 
     aes(x = PC1, y = PC2, label = sample_id), 
     inherit.aes = F) +
     theme_Publication()+
@@ -1367,7 +1235,7 @@ ggplot(
 
 # compare the libsize
 ggplot(
-    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_0, "MO_0 outlier", "normal")),
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_ctrl, "MO_0 outlier", "normal")),
     aes(x = libsize, y = ..scaled.., fill = outlier)
 ) +
     geom_density(alpha = 0.5) +
@@ -1378,18 +1246,18 @@ ggplot(
 # using a fixed cutoff. 
 M0_0_filtered <- calc_pairwise_cor(
     mat = adjusted_counts,
-    outliers = outliers_M0_0,
-    condition ="M0_0"
+    outliers = outliers_M0_ctrl,
+    condition_ ="M0_ctrl"
 )
 M0_0_filtered$correlation_matrix %>% min()
 ```
 
 
 
-#### M2_0
+#### M1_ctrl
 ```{r}
 col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
-h <- Heatmap(cor_result$M2_0,
+h <- Heatmap(cor_result$M1_ctrl,
     show_row_names = F,
     show_column_names = F,
     show_row_dend = F,
@@ -1402,13 +1270,13 @@ h <- Heatmap(cor_result$M2_0,
 draw(h)
 
 # looks like there is really just one sample which is very different
-outliers_M2_0 <- apply(cor_result$M2_0, 2, mean) %>% which.min() %>% names()
+outliers_M1_ctrl <- apply(cor_result$M1_ctrl, 2, mean) %>% which.min() %>% names()
 
 
 
 # recalculate PCA with adjusted counts
-pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_0)],
-    metadata = colData(dds)[rownames(cor_result$M2_0),],
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M1_ctrl),],
     removeVar = 0.4
 )
 pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
@@ -1420,39 +1288,101 @@ for (i in 1:20) {
 }
 
 ggplot(
-    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M2_0, "MO_0 outlier", "normal")),
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M1_ctrl, "MO_0 outlier", "normal")),
     aes(x = PC1, y = PC2, color = outlier)
 ) +
     geom_point(size = 3.5) +
-    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M2_0), 
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M1_ctrl), 
     aes(x = PC1, y = PC2, label = sample_id), 
     inherit.aes = F) +
     theme_Publication()+
     chameleon::scale_color_chameleon()
 
 
-outliers_M2_0_libsize <- mdata %>%
-    filter(sampleid == outliers_M2_0) %>%
+outliers_M1_ctrl_libsize <- mdata %>%
+    filter(sampleid == outliers_M1_ctrl) %>%
+    pull(libsize)
+
+# libsize is 0.42 percentile
+percentile <- ecdf(mdata$libsize)(outliers_M1_ctrl_libsize) * 100
+
+# -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
+# using a fixed cutoff. 
+M1_0_filtered <- calc_pairwise_cor(
+    mat = adjusted_counts,
+    outliers = outliers_M1_ctrl,
+    condition ="M1_ctrl"
+)
+M1_0_filtered$correlation_matrix %>% min()
+```
+
+#### M2_ctrl
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M2_ctrl,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M2_ctrl <- apply(cor_result$M2_ctrl, 2, mean) %>% which.min() %>% names()
+
+
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M2_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+ggplot(
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M2_ctrl, "MO_0 outlier", "normal")),
+    aes(x = PC1, y = PC2, color = outlier)
+) +
+    geom_point(size = 3.5) +
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M2_ctrl), 
+    aes(x = PC1, y = PC2, label = sample_id), 
+    inherit.aes = F) +
+    theme_Publication()+
+    chameleon::scale_color_chameleon()
+
+
+outliers_M2_ctrl_libsize <- mdata %>%
+    filter(sampleid == outliers_M2_ctrl) %>%
     pull(libsize)
 
 # libsize is 0.51 percentile --> actually the 6th smalles. 
-percentile <- ecdf(mdata$libsize)(outliers_M2_0_libsize) * 100
+percentile <- ecdf(mdata$libsize)(outliers_M2_ctrl_libsize) * 100
 
 # -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
 # using a fixed cutoff. 
 M2_0_filtered <- calc_pairwise_cor(
     mat = adjusted_counts,
-    outliers = outliers_M2_0,
-    condition ="M2_0"
+    outliers = outliers_M2_ctrl,
+    condition ="M2_ctrl"
 )
 M2_0_filtered$correlation_matrix %>% min()
 ```
 
 
-#### M0_100
+#### M0_stim
 ```{r}
 col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
-h <- Heatmap(cor_result$M0_100,
+h <- Heatmap(cor_result$M0_stim,
     show_row_names = F,
     show_column_names = F,
     show_row_dend = F,
@@ -1465,13 +1395,13 @@ h <- Heatmap(cor_result$M0_100,
 draw(h)
 
 # looks like there is really just one sample which is very different
-outliers_M0_100 <- apply(cor_result$M0_100, 2, mean) %>% which.min() %>% names()
+outliers_M0_stimm <- apply(cor_result$M0_stim, 2, mean) %>% which.min() %>% names()
 
 
 
 # recalculate PCA with adjusted counts
-pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_100)],
-    metadata = colData(dds)[rownames(cor_result$M0_100),],
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_stim)],
+    metadata = colData(dds)[rownames(cor_result$M0_stim),],
     removeVar = 0.4
 )
 pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
@@ -1483,40 +1413,40 @@ for (i in 1:20) {
 }
 
 ggplot(
-    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_100, "MO_0 outlier", "normal")),
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M0_stimm, "MO_0 outlier", "normal")),
     aes(x = PC1, y = PC2, color = outlier)
 ) +
     geom_point(size = 3.5) +
-    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M0_100), 
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M0_stimm), 
     aes(x = PC1, y = PC2, label = sample_id), 
     inherit.aes = F) +
     theme_Publication()+
     chameleon::scale_color_chameleon()
 
 
-outliers_M0_100_libsize <- mdata %>%
-    filter(sampleid == outliers_M0_100) %>%
+outliers_M0_stimm_libsize <- mdata %>%
+    filter(sampleid == outliers_M0_stimm) %>%
     pull(libsize)
 
 # libsize is 0.68 percentile --> actually the 8th smalles. 
-percentile <- ecdf(mdata$libsize)(outliers_M0_100_libsize) * 100
+percentile <- ecdf(mdata$libsize)(outliers_M0_stimm_libsize) * 100
 
 # -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
 # using a fixed cutoff. 
 M0_100_filtered <- calc_pairwise_cor(
     mat = adjusted_counts,
-    outliers = outliers_M0_100,
-    condition ="M0_oxLDL"
+    outliers = outliers_M0_stimm,
+    condition = "M0_stim"
 )
 M0_100_filtered$correlation_matrix %>% min()
 ```
 
 
 
-#### M1_100
+#### M1_stim
 ```{r}
 col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
-h <- Heatmap(cor_result$M1_100,
+h <- Heatmap(cor_result$M1_stim,
     show_row_names = F,
     show_column_names = F,
     show_row_dend = F,
@@ -1529,13 +1459,13 @@ h <- Heatmap(cor_result$M1_100,
 draw(h)
 
 # looks like there is really just one sample which is very different
-outliers_M1_100 <- apply(cor_result$M1_100, 2, mean) %>% which.min() %>% names()
+outliers_M1_stimm <- apply(cor_result$M1_stim, 2, mean) %>% which.min() %>% names()
 
 
 
 # recalculate PCA with adjusted counts
-pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_100)],
-    metadata = colData(dds)[rownames(cor_result$M1_100),],
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_stim)],
+    metadata = colData(dds)[rownames(cor_result$M1_stim),],
     removeVar = 0.4
 )
 pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
@@ -1547,40 +1477,40 @@ for (i in 1:20) {
 }
 
 ggplot(
-    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M1_100, "MO_0 outlier", "normal")),
+    pca_plot_df_subset %>% mutate(outlier = ifelse(sample_id %in% outliers_M1_stimm, "MO_0 outlier", "normal")),
     aes(x = PC1, y = PC2, color = outlier)
 ) +
     geom_point(size = 3.5) +
-    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M1_100), 
+    ggrepel::geom_label_repel(data = pca_plot_df_subset %>% filter(sample_id %in% outliers_M1_stimm), 
     aes(x = PC1, y = PC2, label = sample_id), 
     inherit.aes = F) +
     theme_Publication()+
     chameleon::scale_color_chameleon()
 
 
-outliers_M1_100_libsize <- mdata %>%
-    filter(sampleid == outliers_M1_100) %>%
+outliers_M1_stimm_libsize <- mdata %>%
+    filter(sampleid == outliers_M1_stimm) %>%
     pull(libsize)
 
 # libsize is 0.25 percentile --> actually the 3th smalles. 
-percentile <- ecdf(mdata$libsize)(outliers_M1_100_libsize) * 100
+percentile <- ecdf(mdata$libsize)(outliers_M1_stimm_libsize) * 100
 
 # -> the outliers have very small libsize in comparison. Lets remove them -> this is data driven instead of just 
 # using a fixed cutoff. 
 M1_100_filtered <- calc_pairwise_cor(
     mat = adjusted_counts,
-    outliers = outliers_M1_100,
-    condition ="M1_oxLDL"
+    outliers = outliers_M1_stimm,
+    condition ="M1_stim"
 )
 M1_100_filtered$correlation_matrix %>% min()
 ```
 
 
 
-#### M2_100
+#### M2_stim
 ```{r}
 col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
-h <- Heatmap(cor_result$M2_100,
+h <- Heatmap(cor_result$M2_stim,
     show_row_names = F,
     show_column_names = F,
     show_row_dend = F,
@@ -1594,8 +1524,8 @@ draw(h)
 
 # This looks just fine. No outliers
 # recalculate PCA with adjusted counts
-pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_100)],
-    metadata = colData(dds)[rownames(cor_result$M2_100),],
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_stim)],
+    metadata = colData(dds)[rownames(cor_result$M2_stim),],
     removeVar = 0.4
 )
 pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
@@ -1606,7 +1536,7 @@ for (i in 1:20) {
     pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
 }
 
-ggplot(pca_plot_df_subset, aes(x = PC1, y = PC2, color="set")) +
+ggplot(pca_plot_df_subset, aes(x = PC1, y = PC2, color="sex")) +
     geom_point(size = 3.5) +
     theme_Publication() +
     chameleon::scale_color_chameleon()
@@ -1617,17 +1547,14 @@ ggplot(pca_plot_df_subset, aes(x = PC1, y = PC2, color="set")) +
 ### Bringing it all together
 ```{r}
 outliers <- c(
-    outliers_M0_0, outliers_M1_0, outliers_M2_0,
-    outliers_M0_100, outliers_M1_100
+    outliers_M0_ctrl, outliers_M1_ctrl, outliers_M2_ctrl,
+    outliers_M0_stimm, outliers_M1_stimm
 )
 
 dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
 dds_filtered <- dds[, !dds$sampleid  %in% outliers]
 saveRDS(dds_filtered, here("QC", "results", "dds_libsize_outliers_ENCODE_removed.rds"))
-
-
 ```
-
 
 
 ```{r}

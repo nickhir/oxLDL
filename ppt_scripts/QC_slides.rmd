@@ -1,0 +1,137 @@
+---
+title: "Generate slides for powerpoint recapping QC"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 300
+)
+```
+
+## **Introduction**
+The [nf-core RNAseq pipeline](https://github.com/nf-core/rnaseq) already does a very extensive set of quality control steps 
+based on the read level (for example # Duplicated reads, GC content, 
+mapping rate, read distribution, …). 
+In this script, we will do some qulaity control steps based on the 
+quantified counts (using [STAR](https://github.com/alexdobin/STAR) followed by [salmon](https://combine-lab.github.io/salmon/)).
+
+```{r, load libraries}
+library(DESeq2)
+library(magrittr)
+library(PCAtools)
+library(tidyverse)
+library(umap)
+library(patchwork)
+library(httpgd)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+### Metadata before QC
+```{r, res = 150, width = 18, height = 8}
+mdata <- readRDS(here("QC", "results", "mdata_clean.tsv"))
+
+age <- plot_column_table(
+    mdata %>%
+        distinct(line, .keep_all = T) %>%
+        pull(age),
+    include_n = T
+) +
+    ggtitle("Age distribution") +
+    xlab("Age") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+
+rna_pool <- plot_column_table(mdata$pool %>%
+    str_remove_all("RNA ") %>%
+    factor(., levels = c("pilot", as.character(1:17))), include_n=TRUE) +
+    ggtitle("RNA pool distribution") +
+    xlab("RNA pool")
+
+
+state <- plot_column_table(mdata$state, include_n = T) +
+    ggtitle("Macrophage type distribution") +
+    xlab("Macrophage type")
+
+# some lines have more than the expected number (6) of entries. Take a look at them
+# we might have to remove one of them because they are technical replicates and not biological ones.
+lines <- plot_column_table(mdata$line) +
+    ggtitle("Cell line distribution") +
+    xlab("Cell lines") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+# simple technical replicates sometimes, even in the same RNA pool and batch
+# for example MM_oxLDL9752052 and MM_oxLDL9752058
+mdata %>%
+    group_by(line) %>%
+    mutate(n_lines = n()) %>%
+    filter(n_lines > 6) %>%
+    arrange(line) 
+
+condition <- plot_column_table(mdata$condition,
+    include_n = T
+) +
+    ggtitle("Condition distribution") +
+    xlab("Condition")
+
+
+oxLDL_set <- plot_column_table(factor(mdata$oxldlset))+
+    ggtitle("oxLDL set distribution") +
+    xlab("oxLDL set") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+sex <- plot_column_table(
+    mdata %>%
+        distinct(line, .keep_all = T) %>%
+        pull(sex),
+    include_n = T
+) +
+    ggtitle("Sex distribution") +
+    xlab("Sex")
+
+ethnicity <- plot_column_table(mdata$ethnicity,
+    include_n = TRUE
+) +
+    ggtitle("Ethnicity") +
+    xlab("Ethnicity") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+batches <- plot_column_table(as.character(mdata$batch1id), include_n = TRUE)+
+    ggtitle("Batches distribution") +
+    xlab("Batch")+
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+# combine the plots
+combined_plot <- wrap_plots(
+    age, sex, ethnicity,
+    lines, oxLDL_set, batches,
+    state, condition,
+    ncol = 3,
+    byrow = TRUE
+)
+combined_plot
+```
