@@ -104,10 +104,10 @@ norm_counts  <- counts(dds, normalized = TRUE)
 
 
 # runs long, even with parallization
-dummy_ <- parallel::mclapply(5:20, function(i) {
-    svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-    saveRDS(svseq, here("QC", "results", str_interp("sva_ENCODE_${i}SVs.rds")))
-}, mc.cores = 20)
+# dummy_ <- parallel::mclapply(5:20, function(i) {
+#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+#     saveRDS(svseq, here("QC", "results", str_interp("sva_ENCODE_${i}SVs.rds")))
+# }, mc.cores = 20)
 
 
 # do a test if this is the same -> they are. correlation > 0.99 for all SVs

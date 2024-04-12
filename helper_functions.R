@@ -131,11 +131,13 @@ plot_continuous_covar <- function(df, covar, PC, x_pos = "left",
 #' @examples
 #' df <- data.frame(covar = factor(rep(c("A", "B"), 50)), PC1_explained_var = runif(100), PC2_explained_var = runif(100))
 #' plot_categorical_covar(df, "covar", c("PC1", "PC2"))
-plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver(), bonferroni_correction=FALSE) {
+plot_categorical_covar <- function(df, covar, PC, 
+xlab = waiver(), ylab = waiver(), bonferroni_correction=FALSE, add_hline=TRUE) {
     plots <- lapply(PC, function(tmp_pcs) {
         # get the explained variation of the PC. for that we have to get the correct column
         if (n_distinct(df[, covar]) == 2) {
             p <- ggplot(df, aes_string(x = covar, y = tmp_pcs, fill = covar)) +
+                geom_hline(yintercept = 0, linetype="dashed", color="black")+
                 geom_boxplot(width = 0.6) +
                 ggsignif::geom_signif(comparisons = list(levels(df[, covar]))) +
                 theme_Publication() %+%
@@ -147,11 +149,12 @@ plot_categorical_covar <- function(df, covar, PC, xlab = waiver(), ylab = waiver
             # calc p value with the kruskal test
             p.val <- broom::tidy(kruskal.test(get(tmp_pcs) ~ get(covar), data = df))$p.value
             if(bonferroni_correction){
-                p.val = round(p.val * length(PC),4)
+                p.val = signif(p.val, 3)
             } else {
-                p.val = round(p.val, 4)
+                p.val = signif(p.val, 3)
             }
             p <- ggplot() +
+                geom_hline(yintercept = 0, linetype="dashed", color="black")+
                 geom_boxplot(data = df, aes_string(x = covar, y = tmp_pcs, fill = covar), width = 0.6) +
                 geom_label(aes(
                     x = median(1:n_distinct(df[, covar])),
