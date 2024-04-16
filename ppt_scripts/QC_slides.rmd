@@ -25,11 +25,8 @@ knitr::opts_chunk$set(
 ```
 
 ## **Introduction**
-The [nf-core RNAseq pipeline](https://github.com/nf-core/rnaseq) already does a very extensive set of quality control steps 
-based on the read level (for example # Duplicated reads, GC content, 
-mapping rate, read distribution, …). 
-In this script, we will do some qulaity control steps based on the 
-quantified counts (using [STAR](https://github.com/alexdobin/STAR) followed by [salmon](https://combine-lab.github.io/salmon/)).
+This is just a concise scripts to generate the plots for the QC ppt.
+For more extensive explanations, see the respective scripts
 
 ```{r, load libraries}
 library(DESeq2)
@@ -46,8 +43,10 @@ source(here("helper_functions.R"))
 ```
 
 ### Metadata before QC
-```{r, res = 150, width = 18, height = 8}
-mdata <- readRDS(here("QC", "results", "mdata_clean.tsv"))
+Original script: QC/scripts/01_initial_QC.rmd
+
+```{r, res = 150, width = 14, height = 8}
+mdata <- readRDS(here("QC", "results", "mdata_clean.rds"))
 
 age <- plot_column_table(
     mdata %>%
@@ -80,14 +79,6 @@ lines <- plot_column_table(mdata$line) +
         axis.text.x = element_blank(),
         axis.ticks.x = element_blank()
     )
-
-# simple technical replicates sometimes, even in the same RNA pool and batch
-# for example MM_oxLDL9752052 and MM_oxLDL9752058
-mdata %>%
-    group_by(line) %>%
-    mutate(n_lines = n()) %>%
-    filter(n_lines > 6) %>%
-    arrange(line) 
 
 condition <- plot_column_table(mdata$condition,
     include_n = T
@@ -123,7 +114,10 @@ ethnicity <- plot_column_table(mdata$ethnicity,
 batches <- plot_column_table(as.character(mdata$batch1id), include_n = TRUE)+
     ggtitle("Batches distribution") +
     xlab("Batch")+
-    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
 
 # combine the plots
 combined_plot <- wrap_plots(
@@ -133,5 +127,406 @@ combined_plot <- wrap_plots(
     ncol = 3,
     byrow = TRUE
 )
+ggsave(
+    plot = combined_plot,
+    filename = here("ppt_scripts", "imgs","mdata_overview.png"),
+    dpi = 350, width = 13, height = 8
+)
 combined_plot
+```
+
+
+## **PCA to remove the libsize outliers**
+
+```{r}
+# load the DESeq2 object
+dds <- readRDS(here("QC", "results", "dds_original.rds"))
+norm_data <- assay(vst(dds, blind = TRUE))
+
+#################
+# CALCULATE PCA #
+#################
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+# Standard PCA plot to highlight the libsize outliers
+p <- density_scatter(
+    df = pca_plot_df,
+    x_variable = str_interp("PC1"),
+    y_variable = str_interp("PC2"),
+    color_by = "condition",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+    xlab = str_interp("PC1: ${signif(unique(pca_plot_df$PC1_explained_var), digits = 3)}% variance"),
+    ylab = str_interp("PC2: ${signif(unique(pca_plot_df$PC2_explained_var), digits = 3)}% variance")
+)
+p <- p +
+    plot_annotation(
+        title = "condition",
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+    )
+
+ggsave(
+    plot = p,
+    filename = here("ppt_scripts","imgs", "inital_PCA.png"),
+    dpi = 350, width = 4, height = 3,
+    scale=2
+)
+
+# highlight outliers.
+# we cant rescue them, so remove them.
+p <- density_scatter(
+    df = pca_plot_df %>% mutate("Library size" = ifelse(libsize>15000, "> 15k", "< 15k")),
+    x_variable = str_interp("PC1"),
+    y_variable = str_interp("PC2"),
+    color_by = "Library size",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+    xlab = str_interp("PC1: ${signif(unique(pca_plot_df$PC1_explained_var), digits = 3)}% variance"),
+    ylab = str_interp("PC2: ${signif(unique(pca_plot_df$PC2_explained_var), digits = 3)}% variance")
+)
+p <- p +
+    plot_annotation(
+        title = "Library size",
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+    )
+
+ggsave(
+    plot = p,
+    filename = here("ppt_scripts", "imgs","libsize_outlier_PCA.png"),
+    dpi = 350, width = 4, height = 3,
+    scale=2
+)
+```
+
+## **PCA to highlight batch effects**
+
+```{r}
+# this object has the tiny libsize outliers removed
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+
+#################
+# CALCULATE PCA #
+#################
+pca_data <- PCAtools::pca(assay(vst(dds, blind=TRUE)),
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+
+PC_pairings <- lapply(1:3, function(x){
+    c(2*x-1,2*x)
+})
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+for (i in PC_pairings) {
+    print(str_interp("Working on PC${i[1]} and PC${i[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+        p <- density_scatter(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${i[1]}"),
+            y_variable = str_interp("PC${i[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+        )
+
+
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "ppt_scripts", "imgs",str_interp("PCA_covariates_PC${i[1]}_PC${i[2]}_uncorrected.png")
+        ),
+        dpi = 350,
+        width = 18,
+        height = 11.5,
+    )
+}
+
+################
+# BOXPLOTS PCA #
+################
+p <- plot_categorical_covar(
+    df = pca_plot_df,
+    covar = "batch1id",
+    PC = paste0("PC", 1:4)
+) %>% wrap_plots(., ncol = 2) &
+    theme(
+        axis.text.x = element_blank(),
+        axis.text.y = element_text(size=5, face="bold")
+    )
+p <- p +
+    plot_annotation(
+        title = "Batch",
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+    )
+
+ggsave(
+    plot = p,
+    filename = here("ppt_scripts", "imgs", "PCA_batch_boxplots.png"),
+    dpi = 350,
+    width = 10,
+    height = 9,
+)
+
+
+#########
+#  UMAP #
+#########
+norm_data <- assay(vst(dds, blind = TRUE))
+umap_data <- umap(t(norm_data))
+
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>%
+    left_join(., colData(dds) %>% data.frame())
+
+p <- density_scatter(
+    df = umap_plot_df,
+    x_variable = "UMAP1",
+    y_variable = "UMAP2",
+    color_by = "batch1id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+)
+
+p <- p +
+    plot_annotation(
+        title = "Batch",
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+    )
+ggsave(
+    plot = p,
+    filename = here("ppt_scripts","imgs", "UMAP_batch_uncorrected.png"),
+    dpi = 350, width = 4, height = 3,
+    scale=2
+)
+
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "line"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("ppt_scripts","imgs", "association_heatmap.png"), res=350, width=9, height=5.5, units="in")
+association_output$heatmap
+dev.off()
+```
+
+### Fix batch effects using SVA
+
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+svseq <- readRDS(here("QC", "results", str_interp("sva_15SVs.rds")))
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV", 1:15)
+tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+norm_data <- assay(vsd_data)
+mod <- model.matrix(~group, tmp_mdata)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("SV", 1:15, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    covariates = mod0,
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (k in 1:20) {
+    pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+}
+
+
+############
+# SV PLOTS #
+############
+# want to highlight SV3 and SV4 which nicely account for sex
+SV_pairings <- lapply(1:2, function(x) {
+    c(2 * x - 1, 2 * x)
+})
+
+for (k in SV_pairings) {
+    print(str_interp("Working on SV${k[1]} and SV${k[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = tmp_mdata,
+            x_variable = str_interp("SV${k[1]}"),
+            y_variable = str_interp("SV${k[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "ppt_scripts", "imgs",
+            str_interp("SV_all_covariates_SV${k[1]}_SV${k[2]}_SVA15_corrected.png")
+        ),
+        dpi = 350,
+        width = 18,
+        height = 11.5,
+    )
+}
+
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+# create PC intervals
+PC_pairings <- lapply(1:3, function(x) {
+    c(2 * x - 1, 2 * x)
+})
+
+for (k in PC_pairings) {
+    print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+        p <- density_scatter(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${k[1]}"),
+            y_variable = str_interp("PC${k[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "ppt_scripts", "imgs",
+            str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_SVA15_corrected.png")
+        ),
+        dpi = 350,
+        width = 18,
+        height = 11.5,
+    )
+}
+
+
+################
+# BOXPLOTS PCA #
+################
+p <- plot_categorical_covar(
+    df = pca_plot_df,
+    covar = "line",
+    PC = paste0("PC", 1:4)
+) %>% wrap_plots(., ncol = 2) &
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 5, face = "bold")
+    )
+
+p <- p +
+    plot_annotation(
+        title = "Cell line",
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+    )
+
+
+ggsave(
+    plot = p,
+    filename = here("ppt_scripts", "imgs", "PCA_line_boxplots_SV15_corrected.png"),
+    dpi = 350,
+    width = 19,
+    height = 9,
+)
+
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("ppt_scripts", "imgs", "association_heatmap_SVA15_corrected.png"),
+    res = 350, width = 9, height = 5.5, units = "in"
+)
+
+association_output$heatmap
+dev.off()
+
+
+
+########
+# UMAP #
+########1
+umap_data <- umap::umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>%
+    left_join(., mdata)
+
+
+# I would like to include the ORA i did because this is nice, then transition to mdata adjustment.
+
+```
+
+
+```{r}
+sessioninfo()
 ```

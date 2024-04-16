@@ -84,6 +84,7 @@ mdata$ethnicity <- case_when(
 mdata <- mdata %>%
     mutate(
         group = factor(group, levels = c("M0_ctrl", "M1_ctrl", "M2_ctrl", "M0_stim", "M1_stim", "M2_stim")),
+        line = factor(line),
         state = factor(state, levels = c("M0", "M1", "M2")),
         condition = factor(condition, levels = c("ctrl", "stim")),
         sex = factor(sex, levels = c("Female", "Male")),
@@ -188,7 +189,7 @@ ggsave(combined_plot,
 )
 data.table::fwrite(mdata, here("QC", "results", "mdata_clean.tsv"), sep="\t", row.names=FALSE)
 # so factor information remains
-saveRDS(mdata, here("QC", "results", "mdata_clean.tsv"))
+saveRDS(mdata, here("QC", "results", "mdata_clean.rds"))
 ```
 
 ## **Count data quality control**
@@ -210,7 +211,7 @@ mdata <- mdata %>% left_join(.,libsize, by="sampleid")
 rownames(mdata) <- mdata$sampleid
 data.table::fwrite(mdata, here("QC", "results", "mdata_clean.tsv"), sep="\t", row.names=FALSE)
 # so factor information remains
-saveRDS(mdata, here("QC", "results", "mdata_clean.tsv"))
+saveRDS(mdata, here("QC", "results", "mdata_clean.rds"))
 dds0 <- DESeqDataSetFromMatrix(round(raw_counts_matrix),
     colData = mdata,
     design = ~1
@@ -221,6 +222,7 @@ keep <- edgeR::filterByExpr(counts(dds0), group = mdata$group)
 dds0 <- dds0[keep,]
 vsd_data <- vst(dds0)
 norm_data <- assay(vsd_data)
+saveRDS(dds0, here("QC", "results", "dds_original.rds"))
 ```
 
 ### Create QC plots for uncorrected data
