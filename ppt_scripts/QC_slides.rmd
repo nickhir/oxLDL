@@ -737,9 +737,437 @@ ggsave(
 ```
 
 
+### Fix batch effects using combination of donor and SVA
+
+```{r}
+# load in DESeq2dataset where the libsize outliers are already removed.
+# for creation see script **01_initial_QC.rmd**
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds <- estimateSizeFactors(dds)
+norm_counts <- counts(dds, norm=TRUE)
+sva_seq <- readRDS(here("QC", "results", "sva_incl_line_5SVs.rds"))
+SVs <- sva_seq$sv
+colnames(SVs) <- paste0("SV", 1:5)
+tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+norm_data <- assay(vst(dds, blind=TRUE))
+mod <- model.matrix(~group, tmp_mdata)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    batch = dds$line,
+    covariates = mod0,
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_counts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (k in 1:6) {
+    pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+}
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+# create PC intervals
+PC_pairings <- lapply(1:3, function(x) {
+    c(2 * x - 1, 2 * x)
+})
+
+for (k in PC_pairings) {
+    print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+        p <- density_scatter(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${k[1]}"),
+            y_variable = str_interp("PC${k[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "ppt_scripts", "imgs",
+            str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_SVA5_incl_line_corrected.png")
+        ),
+        dpi = 350,
+        width = 18,
+        height = 11.5,
+    )
+}
+
+
+################
+# BOXPLOTS PCA #
+################
+
+# -> no associations
+p <- plot_categorical_covar(
+    df = pca_plot_df,
+    covar = "line",
+    PC = paste0("PC", 1:4)
+) %>% wrap_plots(., ncol = 2) &
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(size = 5, face = "bold")
+    )
+
+p <- p +
+    plot_annotation(
+        title = "Cell line",
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+    )
+p
 
 
 
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("ppt_scripts", "imgs", "association_heatmap_SVA5_incl_line_corrected.png"),
+    res = 350, width = 9, height = 5.5, units = "in"
+)
+association_output$heatmap
+dev.off()
+
+
+
+########
+# UMAP #
+########
+umap_data <- umap::umap(t(adjusted_counts))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>%
+    left_join(., mdata)
+
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+ggsave(
+    plot = final_plot,
+    filename = here(
+        "ppt_scripts", "imgs", "UMAP_covariates_SVA5_incl_line_corrected.png"
+    ),
+    dpi = 350,
+    width = 18,
+    height = 11.5,
+)
+```
+
+
+#### Outlier detection
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+mdata <- colData(dds) %>% data.frame()
+sva_seq <- readRDS(here("QC", "results", "sva_incl_line_5SVs.rds"))
+dds <- estimateSizeFactors(dds)
+tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:5)))
+norm_data <- assay(vst(dds, blind = TRUE))
+
+mod <- model.matrix(~group, tmp_mdata)
+formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    batch = dds$line,
+    covariates = mod0,
+    design = mod
+)
+mdata <- mdata %>%
+    mutate(group = paste(state, condition, sep="_")) 
+cor_result <- lapply(unique(mdata$group), function(x) {
+    samples <- mdata %>%
+        filter(group == x) %>%
+        pull(sampleid)
+
+    tmp_cnts <- adjusted_counts[, samples]
+    cor_map <- cor(tmp_cnts, method = "spearman")
+    return(cor_map)
+})
+names(cor_result) <- unique(mdata$group)
+```
+
+
+##### M0_ctrl
+```{r}
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M0_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:5) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+M0_ctrl_plot <- density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+
+
+# MM_oxLDL9752143 is very different from the rest... remove it
+M0_ctrl_outlier <- c("MM_oxLDL9752143")
+
+```
+
+
+##### M1_ctrl
+```{r}
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M1_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+M1_ctrl_plot <- density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+# MM_oxLDL9752115 is very different from the rest, prob. because of very low libsize 
+M1_ctrl_outlier <- c("MM_oxLDL9752115")
+
+```
+
+
+##### M2_ctrl
+```{r}
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M2_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+M2_ctrl_plot <- density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+# low libsize again. 
+M2_ctrl_outlier <- c("MM_oxLDL9752225")
+
+```
+
+
+##### M0_stim
+```{r}
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_stim)],
+    metadata = colData(dds)[rownames(cor_result$M0_stim),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+M0_oxldl_plot <- density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+
+# MM_oxLDL7992361
+mdata %>% filter(sampleid=="MM_oxLDL7992361")
+M0_oxldl_outlier <- c("MM_oxLDL7992361")
+```
+
+
+##### M1_stim
+```{r}
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_stim)],
+    metadata = colData(dds)[rownames(cor_result$M1_stim),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+M1_oxldl_plot <- density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+
+M1_oxldl_outlier <- "MM_oxLDL7734278"
+```
+
+
+##### M2_stim
+```{r}
+# This looks just fine. No outliers
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_stim)],
+    metadata = colData(dds)[rownames(cor_result$M2_stim),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+M2_oxldl_plot <- density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+
+```
+
+
+##### Combine plots
+```{r}
+final_plot <- wrap_plots(
+    M0_ctrl_plot, M1_ctrl_plot, M2_ctrl_plot,
+    plot_spacer(), plot_spacer(), plot_spacer(),
+    M0_oxldl_plot, M1_oxldl_plot, M2_oxldl_plot
+) + plot_layout(heights = c(1, 0.15, 1))
+
+
+ggsave(
+    plot = final_plot,
+    filename = here(
+        "ppt_scripts", "imgs", "group_wise_PCAs_corrected.png"
+    ),
+    dpi = 350,
+    width = 16,
+    height = 12.5,
+)
+```
+
+
+#### Plot PCA and UMAP after removing the samples. 
 
 
 ```{r}
