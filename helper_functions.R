@@ -107,9 +107,6 @@ covar_correlation <- function(df, covars, components = c("PC1", "PC2", "PC3", "P
     ))
 }
 
-
-
-
 plot_continuous_covar <- function(df, covar, PC, x_pos = "left",
                                   y_pos = "bottom") {
     require(ggpubr)
