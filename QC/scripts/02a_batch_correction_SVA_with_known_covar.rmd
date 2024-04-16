@@ -1,0 +1,861 @@
+---
+title: "RNA seq batch correction"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+## **Introduction**
+We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
+In this script, we will try out and evaluate different methods to correct for that. 
+
+Here we adjust the data where we have removed samples with extremely low counts < 10k.
+
+We noticed, a few things by now: 
+(a) if we just use SVA, it looks like there is still residual batch effects for batch1id, line and others.
+(b) if we instead adjust using "line" from the mdata, this looks much better, but PC1 and PC2 actually dont correspond to the biological process of interest. 
+This means that there is, by definition, a lot of unwanted variation. 
+
+Now we will try to combine these approaches. Adjust for line but also use SVA to model the unadjusted batch. 
+
+
+Not 100% sure what the correct way for this is. I am going of the following forum posts:
+https://support.bioconductor.org/p/54719/
+https://support.bioconductor.org/p/98461/ -> see comment from asaffa01
+https://support.bioconductor.org/p/124979/ -> this actually very useful if I decide to go with limma
+https://www.biostars.org/p/333597/
+
+```{r, load libraries}
+library(DESeq2)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(magrittr)
+library(PCAtools)
+library(umap)
+library(patchwork)
+library(sva)
+library(clusterProfiler)
+library(RUVSeq)
+library(httpgd)
+library(tidyverse)
+library(Rtsne)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+```{r}
+calc_pairwise_cor <- function(mat, outliers, condition_){
+    keep_samples <- mdata %>% dplyr::filter(group == condition_) %>% pull(sampleid)
+    tmp_cnts <- mat[, keep_samples]
+    tmp_cnts <- tmp_cnts[, !colnames(tmp_cnts) %in% outliers]
+    pairwise_correlation <- cor(tmp_cnts, method = "spearman")
+    h <- Heatmap(pairwise_correlation,
+        show_row_names = F,
+        show_column_names = F,
+        show_row_dend = F,
+        show_column_dend = F,
+        col = col_fun,
+        name="R"
+    ) %>%
+        ggplotify::as.ggplot()
+    return(list(
+        heatmap = h,
+        correlation_matrix = pairwise_correlation
+    ))
+}
+```
+
+## **SVA**
+
+```{r calculate SVs}
+# load in DESeq2dataset where the libsize outliers are already removed.
+# for creation see script **01_initial_QC.rmd**
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds <- estimateSizeFactors(dds)
+norm_counts <- counts(dds, norm=TRUE)
+mod <- model.matrix(~line+group, colData(dds))
+mod0 <- model.matrix(~line, colData(dds))
+
+
+
+# # runs long, even with parallization
+# dummy_ <- parallel::mclapply(3:20, function(i) {
+#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+#     saveRDS(svseq, here("QC", "results", str_interp("sva_incl_line_${i}SVs.rds")))
+# }, mc.cores=20)
+
+
+# # alternative is this. I dont think this is correct though. actually causes an error: system is computationally singular
+# mod <- model.matrix(~line+group, colData(dds))
+# mod0 <- model.matrix(~1, colData(dds))
+# dummy_ <- parallel::mclapply(3:20, function(i) {
+#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
+#     saveRDS(svseq, here("QC", "results", str_interp("sva_incl_line_null_model${i}SVs.rds")))
+# }, mc.cores=20)
+
+
+```
+
+
+### **Try and find out what the SVs correspond to**
+Still difficult to exactly determine what SV1 corresponds to. SV2 very clearly batch, but that was already the case for the PCA.
+Big difference is that none of the SVs is associated with our conditions of interest which is good.
+```{r}
+mdata <- colData(dds) %>% data.frame()
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+
+dummy_ <- parallel::mclapply(3:20, function(i) {
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_incl_line${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_incl_line_${i}SVs.rds")))
+    SVs <- svseq$sv
+    colnames(SVs) <- paste0("SV", 1:i)
+    mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
+
+    ###########
+    # HEATMAP #
+    ###########
+    covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize")
+    correlation_SVs <- covar_correlation(
+        df = mdata,
+        covars = covar_list,
+        components = paste0("SV", 1:i)
+    )
+    png(here("QC", "results", "imgs", str_interp("SVA_incl_line${i}"), "heatmap.png"), res = 150, width = 9, height = 5.5, units = "in")
+    correlation_SVs$heatmap
+    dev.off()
+
+    ############
+    # BOXPLOTS #
+    ############
+    # check for association
+    for (x in columns_to_plot) {
+        print(x)
+        p <- plot_categorical_covar(
+            df = mdata,
+            covar = x,
+            PC = paste0("SV", 1:i),
+            bonferroni_correction = TRUE
+        )
+        p <- lapply(p, function(k) {
+            k <- k + geom_hline(yintercept = 0, linetype = "dashed")
+        })
+
+        p <- p %>% wrap_plots(., ncol = 5) &
+            theme(
+                axis.text.x = element_blank(),
+                axis.text.y = element_text(size = 5, face = "bold")
+            )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        ggsave(
+            plot = p,
+            filename = here("QC", "results", "imgs", str_interp("SVA_incl_line${i}"), str_interp("SV_associations_${x}.png")),
+            dpi = 150,
+            width = 15,
+            height = 10,
+        )
+    }
+
+    ############
+    # SV PLOTS #
+    ############
+    # similar to PC plots but with SV on the axis. See if this improves seperation of batches
+    SV_pairings <- lapply(1:floor(i / 2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in SV_pairings) {
+        print(str_interp("Working on SV${k[1]} and SV${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            p <- density_scatter(
+                df = mdata,
+                x_variable = str_interp("SV${k[1]}"),
+                y_variable = str_interp("SV${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2
+            )
+
+
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("SVA_incl_line${i}"),
+                str_interp("SVA_all_covariates_SV${k[1]}_SV${k[2]}.png")
+            ),
+            dpi = 150,
+            width = 18,
+            height = 11.5,
+        )
+    }
+}, mc.cores = 20)
+
+```
+
+
+### Use SVs to correct the count data
+```{r}
+# this is needed for the enrichment analysis that we are doing.
+hs_msigdb_df <- msigdbr::msigdbr(species = "Homo sapiens")
+
+gene_sets <- hs_msigdb_df %>%
+    filter(gs_subcat == "GO:BP" | gs_cat == "H" | gs_subcat == "CP:KEGG") %>%
+    select(gs_name, gene_symbol)
+
+vsd_data <- vst(dds, blind=TRUE)
+mdata <- colData(dds) %>% data.frame()
+
+dummy_ <- parallel::mclapply(3:20, function(i){
+    dir.create(here("QC", "results", "imgs", str_interp("SVA_incl_line${i}")), showWarnings = FALSE)
+    svseq <- readRDS(here("QC", "results", str_interp("sva_incl_line_${i}SVs.rds")))
+    SVs <- svseq$sv
+    colnames(SVs) <- paste0("SV", 1:i)
+    tmp_mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+    # use limmas removeBatchEffects to emulate what the linear model will eventually do.
+    norm_data <- assay(vsd_data)
+    mod <- model.matrix(~group, tmp_mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("SV", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        batch = vsd_data$line,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+
+    # Extract the genes which most influence PC1 and PC2 and see if they are enriched in any biological domain:
+    for (z in 1:2) {
+        print(paste("Running ORA for PC", z))
+        # extract top 300 genes which most influence PC
+        top_loadings_gene_names <- pca_data$xvars[order(abs(pca_data$loadings[, paste0("PC", z)]), decreasing = T)[1:300]]
+
+        enrichment_result <- enricher(
+            gene = top_loadings_gene_names,
+            universe = rownames(dds),
+            minGSSize = 5,
+            maxGSSize = 300,
+            TERM2GENE = gene_sets
+        )
+
+        # for each of the biological domains, grep the top 3 sig. terms
+        # for each of the biological domains, grep the top 3 sig. terms
+        sig_results <- enrichment_result@result %>%
+            mutate(domain = str_extract(Description, "^[^_]*")) %>%
+            mutate(ratio_numeric = sapply(.$GeneRatio, function(x) {
+                eval(
+                    str2expression(x)
+                )
+            })) %>%
+            filter(p.adjust < 0.05) %>%
+            group_by(domain) %>%
+            slice_min(., order_by = p.adjust, n = 3) %>%
+            mutate(Description_short = shorten_strings(Description, 30))
+        
+        if (nrow(sig_results) > 0) {
+            enrichment_plot <- ggplot(sig_results, aes(x = ratio_numeric, y = Description_short, color = p.adjust)) +
+                geom_segment(aes(
+                    x = 0, xend = ratio_numeric, y = Description_short, yend = Description_short
+                ), color = "black", linewidth = 1.5) +
+                geom_point(size = 5) +
+                scale_color_gradient(low = "red", high = "blue") +
+                theme_Publication_side() +
+                ylab("Description") +
+                xlab("Gene Ratio") +
+                scale_x_continuous(expand = c(0, 0.01))
+        } else {
+            enrichment_plot <- ggplot() +
+                theme_void()
+        }
+        ggsave(
+            plot = enrichment_plot,
+            file = here("QC", "results", "imgs", str_interp("SVA_incl_line${i}"), str_interp("ORA_PC${z}.png")),
+            dpi=150, 
+            width=10,
+            height = 6
+
+        )
+
+    }
+
+    pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+    for (k in 1:20) {
+        pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+    }
+
+    ##################
+    # CALCULATE UMAP #
+    ##################
+    umap_data <- umap::umap(t(adjusted_counts))
+    umap_plot_df <- umap_data$layout %>%
+        data.frame() %>%
+        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+        rownames_to_column("sampleid") %>%
+        left_join(., mdata)
+    
+    ##################
+    # CALCULATE TSNE #
+    ##################
+    tsne_data <- Rtsne::Rtsne(t(adjusted_counts))
+    tsne_plot_df <- tsne_data$Y %>%
+            data.frame() %>%
+            magrittr::set_colnames(c("TSNE1", "TSNE2")) %>%
+            mutate("sampleid" = colnames(adjusted_counts)) %>%
+            left_join(., mdata)
+
+
+    ###########
+    # HEATMAP #
+    ###########
+    association_output <- covar_correlation(
+        df = pca_plot_df,
+        covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
+        components = paste0("PC", 1:15)
+    )
+
+    png(here("QC", "results", "imgs", str_interp("SVA_incl_line${i}"), "association_heatmap_corrected.png"),
+        res = 150, width = 9, height = 5.5, units = "in"
+    )
+    association_output$heatmap
+    dev.off()
+
+    #############
+    # PCA PLOTS #
+    #############
+    columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+
+    # create PC intervals
+    PC_pairings <- lapply(1:floor(i/2), function(x) {
+        c(2 * x - 1, 2 * x)
+    })
+
+    for (k in PC_pairings) {
+        print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+        plots <- lapply(columns_to_plot, function(x) {
+            expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+            expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+            p <- density_scatter(
+                df = pca_plot_df,
+                x_variable = str_interp("PC${k[1]}"),
+                y_variable = str_interp("PC${k[2]}"),
+                color_by = x,
+                density_plot_ratio = 0.15,
+                pt_size = 1.2,
+                xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+                ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+            )
+            p <- p +
+                plot_annotation(
+                    title = x,
+                    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+                )
+            return(p)
+        })
+        final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+        ggsave(
+            plot = final_plot,
+            filename = here(
+                "QC", "results", "imgs", str_interp("SVA_incl_line${i}"),
+                str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
+            ),
+            dpi = 150,
+            width = 18,
+            height = 11.5,
+        )
+    }
+
+    ##############
+    # UMAP PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("SVA_incl_line${i}"), "UMAP_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 18,
+        height = 11.5,
+    )
+    
+    ##############
+    # TSNE PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        p <- density_scatter(
+            df = tsne_plot_df,
+            x_variable = "TSNE1",
+            y_variable = "TSNE2",
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here("QC", "results", "imgs", str_interp("SVA_incl_line${i}"), "TSNE_all_covariates_corrected.png"),
+        dpi = 150,
+        width = 18,
+        height = 11.5,
+    )
+    
+}, mc.cores = 20) 
+```
+
+
+### Conclusion
+
+**SVA**:
+Results look actually very good. Not sure if I am overadjusting...
+5 SVs look very good.
+
+
+### Effect of library size
+Some of our samples have quite a small library size (<100k reads). See if this causes any problems by looking at each biological group. 
+
+```{r}
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+mdata <- colData(dds) %>% data.frame()
+sva_seq <- readRDS(here("QC", "results", "sva_incl_line_5SVs.rds"))
+dds <- estimateSizeFactors(dds)
+tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:5)))
+norm_data <- assay(vst(dds, blind = TRUE))
+
+mod <- model.matrix(~group, tmp_mdata)
+formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
+mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    batch = dds$line,
+    covariates = mod0,
+    design = mod
+)
+
+# we do have some isogenic replicates:
+# technical_replicate_samples <- mdata %>%
+#     mutate(samplename = paste(line, group, sep = "_")) %>%
+#     group_by(samplename) %>%
+#     mutate(n = n()) %>%
+#     filter(n == 2) %>%
+#     arrange(samplename) %>% 
+#     pull(sampleid)
+
+# pairings <- lapply(1:(length(technical_replicate_samples)/2), function(x) {
+#     c(2 * x - 1, 2 * x)
+# })
+# pairwise_cor <- sapply(pairings, function(i){
+#     tmp_samples <- technical_replicate_samples[i]
+#     cor(adjusted_counts[, tmp_samples[1]], adjusted_counts[, tmp_samples[2]], method="spearman")
+# })
+# table(pairwise_cor > 0.9)
+
+# anisogenic replicates
+mdata <- mdata %>%
+    mutate(group = paste(state, condition, sep="_")) 
+
+cor_result <- lapply(unique(mdata$group), function(x){
+    samples <- mdata %>%
+        filter(group == x)  %>% 
+        pull(sampleid)
+
+    tmp_cnts <- adjusted_counts[, samples]
+    cor_map <- cor(tmp_cnts, method = "spearman")
+    return(cor_map)
+})
+names(cor_result) <- unique(mdata$group)
+
+# some have very low correlation.
+sapply(cor_result, min)
+```
+
+
+#### M0_ctrl
+```{r}
+col_fun = colorRamp2(c(0.5, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M0_ctrl,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+
+h <- draw(h)
+# outliers_M0_ctrl <- column_order(draw(h))$`1`
+# outliers_M0_ctrl <- rownames(cor_result$M0_ctrl)[outliers_M0_ctrl]
+apply(cor_result$M0_ctrl, 2, mean) %>% sort(decreasing = T)
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M0_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+# MM_oxLDL9752143 is very different from the rest... remove it
+M0_ctrl_outlier <- c("MM_oxLDL9752143")
+
+```
+
+
+
+#### M1_ctrl
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M1_ctrl,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M1_ctrl <- apply(cor_result$M1_ctrl, 2, mean) %>% which.min() %>% names()
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M1_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+# MM_oxLDL9752115 is very different from the rest, prob. because of very low libsize 
+M1_ctrl_outlier <- c("MM_oxLDL9752115")
+
+```
+
+#### M2_ctrl
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M2_ctrl,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M2_ctrl <- apply(cor_result$M2_ctrl, 2, mean) %>% which.min() %>% names()
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_ctrl)],
+    metadata = colData(dds)[rownames(cor_result$M2_ctrl),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+# low libsize again. 
+M2_ctrl_outlier <- c("MM_oxLDL9752225")
+
+```
+
+
+#### M0_stim
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M0_stim,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M0_stimm <- apply(cor_result$M0_stim, 2, mean) %>% which.min() %>% names()
+
+
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M0_stim)],
+    metadata = colData(dds)[rownames(cor_result$M0_stim),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+# MM_oxLDL7992361
+mdata %>% filter(sampleid=="MM_oxLDL7992361")
+M0_oxldl_outlier <- c("MM_oxLDL7992361")
+```
+
+
+
+#### M1_stim
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M1_stim,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# looks like there is really just one sample which is very different
+outliers_M1_stimm <- apply(cor_result$M1_stim, 2, mean) %>% which.min() %>% names()
+
+
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M1_stim)],
+    metadata = colData(dds)[rownames(cor_result$M1_stim),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+M1_oxldl_outlier <- "MM_oxLDL7734278"
+```
+
+
+
+#### M2_stim
+```{r}
+col_fun = colorRamp2(c(0.7, 1), c("blue", "red"))
+h <- Heatmap(cor_result$M2_stim,
+    show_row_names = F,
+    show_column_names = F,
+    show_row_dend = F,
+    show_column_dend = F,
+    col = col_fun,
+    row_km = 2,
+    column_km = 2,
+    name="R"
+)
+draw(h)
+
+# This looks just fine. No outliers
+# recalculate PCA with adjusted counts
+pca_data_subset <- PCAtools::pca(adjusted_counts[, rownames(cor_result$M2_stim)],
+    metadata = colData(dds)[rownames(cor_result$M2_stim),],
+    removeVar = 0.4
+)
+pca_plot_df_subset <- pca_data_subset$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+for (i in 1:20) {
+    pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+}
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${i[2]}_explained_var")], 2)
+density_scatter(
+    df = pca_plot_df_subset %>% mutate(`libsize ` = ifelse(libsize < 175000, "<175000", ">175000")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "libsize ",
+    density_plot_ratio = 0,
+    pt_size = 3,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+
+```
+
+
+### Bringing it all together
+```{r}
+outliers <- c(
+    M0_ctrl_outlier, M1_ctrl_outlier, M2_ctrl_outlier,
+    M0_oxldl_outlier, M1_oxldl_outlier 
+)
+
+dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds_filtered <- dds[, !dds$sampleid  %in% outliers]
+saveRDS(dds_filtered, here("QC", "results", "dds_sva_incl_line_libsize_cleaned.rds"))
+```
+
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
