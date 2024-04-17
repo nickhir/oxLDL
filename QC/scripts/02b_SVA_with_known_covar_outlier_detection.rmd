@@ -27,24 +27,14 @@ knitr::opts_chunk$set(
 ```
 
 ## **Introduction**
-We saw in the script **01_initial_QC.rmd**, that there are strong batch effects in our dataset which is not surprising.
-In this script, we will try out and evaluate different methods to correct for that. 
+If we look at our corrected UMAP, it seems like there are some mislabeled samples (M2 in a cloud of M1s).
 
-Here we adjust the data where we have removed samples with extremely low counts < 10k.
+Try and detect mislabeled samples for example samples that are actually unstimulated but labeled as stimulated. 
+For this, I will do an unadjusted PCA per library pool and then look if I see patterns. 
 
-We noticed, a few things by now: 
-(a) if we just use SVA, it looks like there is still residual batch effects for batch1id, line and others.
-(b) if we instead adjust using "line" from the mdata, this looks much better, but PC1 and PC2 actually dont correspond to the biological process of interest. 
-This means that there is, by definition, a lot of unwanted variation. 
+I am doing this unadjsted, because for the adjusted plots, where I did PCAs for M2_stim, it did not seem like there are 
+any outliers. 
 
-Now we will try to combine these approaches. Adjust for line but also use SVA to model the unadjusted batch. 
-
-
-Not 100% sure what the correct way for this is. I am going of the following forum posts:
-https://support.bioconductor.org/p/54719/
-https://support.bioconductor.org/p/98461/ -> see comment from asaffa01
-https://support.bioconductor.org/p/124979/ -> this actually very useful if I decide to go with limma
-https://www.biostars.org/p/333597/
 
 ```{r, load libraries}
 library(DESeq2)
@@ -67,55 +57,98 @@ source(here("plot_theme.R"))
 source(here("helper_functions.R"))
 ```
 
-```{r}
-calc_pairwise_cor <- function(mat, outliers, condition_){
-    keep_samples <- mdata %>% dplyr::filter(group == condition_) %>% pull(sampleid)
-    tmp_cnts <- mat[, keep_samples]
-    tmp_cnts <- tmp_cnts[, !colnames(tmp_cnts) %in% outliers]
-    pairwise_correlation <- cor(tmp_cnts, method = "spearman")
-    h <- Heatmap(pairwise_correlation,
-        show_row_names = F,
-        show_column_names = F,
-        show_row_dend = F,
-        show_column_dend = F,
-        col = col_fun,
-        name="R"
-    ) %>%
-        ggplotify::as.ggplot()
-    return(list(
-        heatmap = h,
-        correlation_matrix = pairwise_correlation
-    ))
-}
-```
 
 ## **SVA**
 
 ```{r calculate SVs}
 # load in DESeq2dataset where the libsize outliers are already removed.
 # for creation see script **01_initial_QC.rmd**
-dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds <- readRDS(here("QC", "results", "dds_sva_incl_line_libsize_cleaned.rds"))
 dds <- estimateSizeFactors(dds)
-norm_counts <- counts(dds, norm=TRUE)
-mod <- model.matrix(~line+group, colData(dds))
-mod0 <- model.matrix(~line, colData(dds))
+mdata <- colData(dds) %>% data.frame()
+# sva_seq <- readRDS(here("QC", "results", "sva_incl_line_5SVs.rds"))
+# mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:5)))
+mdata$libsize_binned <- mdata$libsize  %>% log() %>% cut(, breaks = 10) 
 
 
 
-# # runs long, even with parallization
-# dummy_ <- parallel::mclapply(3:20, function(i) {
-#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-#     saveRDS(svseq, here("QC", "results", str_interp("sva_incl_line_${i}SVs.rds")))
-# }, mc.cores=20)
+
+columns_to_plot <- c("state", "condition", "group", "age", "ethnicity", "libsize_binned")
+
+batchwise_PCA <- lapply(unique(dds$batch1id), function(batch) {
+    dds_subset <- dds[, dds$batch1id == batch]
+    norm_counts <- assay(vst(dds_subset, blind = TRUE))
+    mod <- model.matrix(~group, colData(dds_subset))
+    
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_counts,
+        batch = dds_subset$line,
+        covariates = dds_subset$libsize,
+        design = mod
+    )
+    
+
+    pca_data_subset <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds_subset),
+        removeVar = 0.4
+    )
+    pca_plot_df_subset <- pca_data_subset$rotated[, 1:10] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+
+    for (i in 1:10) {
+        pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
+    }
+
+    k = c(1,2)
+    print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC${k[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC${k[2]}_explained_var")], 2)
+        p <- density_scatter(
+            df = pca_plot_df_subset,
+            x_variable = str_interp("PC${k[1]}"),
+            y_variable = str_interp("PC${k[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 3,
+            xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+
+    plot(pca_plot_df_subset$PC1, pca_plot_df_subset$libsize)
+    # ggsave(
+    #     plot = final_plot,
+    #     filename = here(
+    #         "QC", "results", "imgs", str_interp("SVA_incl_line${i}"),
+    #         str_interp("PCA_all_covariates_PC${k[1]}_PC${k[2]}_corrected.png")
+    #     ),
+    #     dpi = 150,
+    #     width = 18,
+    #     height = 11.5,
+    # )
+})
 
 
-# # alternative is this. I dont think this is correct though. actually causes an error: system is computationally singular
-# mod <- model.matrix(~line+group, colData(dds))
-# mod0 <- model.matrix(~1, colData(dds))
-# dummy_ <- parallel::mclapply(3:20, function(i) {
-#     svseq <- svaseq(norm_counts, mod, mod0, n.sv = i)
-#     saveRDS(svseq, here("QC", "results", str_interp("sva_incl_line_null_model${i}SVs.rds")))
-# }, mc.cores=20)
+
+
+
+
+
+
+
+table(colData(dds)$batch1id)
+
+
+
 
 
 ```

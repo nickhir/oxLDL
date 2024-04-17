@@ -130,3 +130,4 @@ overlap_genotype <- sapply(oxLDL_line_id, function(id) {
 table(overlap_genotype)
 overlap_genotype[overlap_genotype==FALSE]
 ```
+

@@ -351,7 +351,7 @@ association_output$heatmap
 dev.off()
 ```
 
-### Fix batch effects using SVA
+### **Fix batch effects using SVA**
 
 ```{r}
 dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
