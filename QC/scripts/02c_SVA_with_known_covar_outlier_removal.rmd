@@ -24,126 +24,6 @@ knitr::opts_chunk$set(
 )
 ```
 
-
-```{r}
-show_batch <- function(dds, value, sampleids=NA, output_adjusted = TRUE, tsne=FALSE, col_name = "batch1id"){
-    dds_subset <- dds[, colData(dds)[, col_name] == value]
-    tmp_mdata <- mdata %>% data.frame() %>% filter(sampleid %in% dds_subset$sampleid)
-    norm_counts <- assay(vst(dds_subset, blind = TRUE))
-    mod <- model.matrix(~group, colData(dds_subset))
-    mod0 <- model.matrix(~SV1 + SV2 + SV3 + SV4 + SV5, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
-    # adjust the counts using limma
-    adjusted_counts <- limma::removeBatchEffect(norm_counts,
-        batch = dds_subset$line,
-        covariates = mod0,
-        design = mod
-    )
-
-    pca_data_subset <- PCAtools::pca(adjusted_counts,
-        metadata = colData(dds_subset),
-        removeVar = 0.4
-    )
-
-    pca_plot_df_subset <- pca_data_subset$rotated[, 1:10] %>%
-        rownames_to_column("sample_id") %>%
-        left_join(., mdata, by = c("sample_id" = "sampleid"))
-
-    for (i in 1:10) {
-        pca_plot_df_subset[, str_interp("PC${i}_explained_var")] <- pca_data_subset$variance[i]
-    }
-   
-    expl_var1 <- round(pca_plot_df_subset[1, str_interp("PC1_explained_var")], 2)
-    expl_var2 <- round(pca_plot_df_subset[1, str_interp("PC2_explained_var")], 2)
-
-    p_pca <- ggplot(pca_plot_df_subset, aes(x = PC1, y = PC2, color = group)) +
-        geom_point(size = 3) +
-        scale_color_manual(values = c("#ee794a", "#4cf73c", "#6071d3", "#FA392A", "#0AB517", "#0b218d")) +
-        theme_Publication() +
-        ggtitle(value) +
-        xlab(str_interp("PC1: ${expl_var1}% variance")) +
-        ylab(str_interp("PC2: ${expl_var2}% variance")) +
-        guides(color = guide_legend(nrow = 2, byrow = TRUE)) +
-        ggrepel::geom_label_repel(
-            data = pca_plot_df_subset %>% filter(sample_id %in% sampleids),
-            aes(x = PC1, y = PC2, label = sample_id, size = 2.3),
-            inherit.aes = FALSE, show.legend = FALSE,
-            min.segment.length = 0,
-            nudge_y = .2,
-        )
-    
-    
-    ########
-    # UMAP #
-    ########
-    umap_data <- umap::umap(t(adjusted_counts))
-    umap_plot_df <- umap_data$layout %>%
-        data.frame() %>%
-        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
-        rownames_to_column("sample_id") %>%
-        left_join(., mdata, by = c("sample_id" = "sampleid"))
-
-    p_umap <- ggplot(umap_plot_df, aes(x = UMAP1, y = UMAP2, color = group)) +
-        geom_point(size = 3) +
-        scale_color_manual(values = c("#ee794a", "#4cf73c", "#6071d3", "#FA392A", "#0AB517", "#0b218d")) +
-        theme_Publication() +
-        ggtitle(value) +
-        xlab("UMAP1") +
-        ylab("UMAP2") +
-        guides(color = guide_legend(nrow = 2, byrow = TRUE)) +
-        ggrepel::geom_label_repel(
-            data = umap_plot_df %>% filter(sample_id %in% sampleids),
-            aes(x = UMAP1, y = UMAP2, label = sample_id, size = 2.3),
-            min.segment.length = 0,
-            nudge_y = .2,
-            inherit.aes = FALSE, show.legend = FALSE
-        )
-    
-    if (tsne) {
-        tsne_data <- Rtsne::Rtsne(t(adjusted_counts))
-        tsne_plot_df <- tsne_data$Y %>%
-            data.frame() %>%
-            magrittr::set_colnames(c("TSNE1", "TSNE2")) %>%
-            mutate("sample_id" = colnames(adjusted_counts)) %>%
-            left_join(., mdata, by = c("sample_id" = "sampleid"))
-        
-        p_tsne <- ggplot(tsne_plot_df, aes(x = TSNE1, y = TSNE2, color = group)) +
-            geom_point(size = 3) +
-            scale_color_manual(values = c("#ee794a", "#4cf73c", "#6071d3", "#FA392A", "#0AB517", "#0b218d")) +
-            theme_Publication() +
-            ggtitle(value) +
-            xlab("TSNE1") +
-            ylab("TSNE2") +
-            guides(color = guide_legend(nrow = 2, byrow = TRUE)) +
-            ggrepel::geom_label_repel(
-                data = tsne_plot_df %>% filter(sample_id %in% sampleids),
-                aes(x = TSNE1, y = TSNE2, label = sample_id, size = 2.3),
-                min.segment.length = 0,
-                nudge_y = .2,
-                inherit.aes = FALSE, show.legend = FALSE
-            )
-        
-    }
-    
-
-    if (!output_adjusted & tsne) {
-        return(list(p_pca, p_umap, p_tsne))
-    }
-
-    if (!output_adjusted) {
-        return(list(p_pca, p_umap))
-    } 
-
-
-    dds_updated <- dds_subset[, !dds_subset$sampleid %in% sampleids]
-    print("Rerunning show_batch to remove highlighted sample")
-    # i guess technically we would have to recalc sva, but this should be alright for the beginning
-    updated_plots <- show_batch(dds = dds_updated, value = value, col_name = col_name, output_adjusted = F)
-    final_plot <- wrap_plots(p_pca, p_umap, updated_plots[[1]], updated_plots[[2]], byrow=TRUE, ncol = 2)
-    return(final_plot)
-}
-
-```
-
 ```{r, load libraries}
 library(DESeq2)
 library(ComplexHeatmap)
@@ -167,23 +47,31 @@ source(here("helper_functions.R"))
 
 
 ## **Introduction**
-If we look at our corrected UMAP, it seems like there are some mislabeled samples (M2 in a cloud of M1s).
-
-Try and detect mislabeled samples for example samples that are actually unstimulated but labeled as stimulated. 
-For this we will go through each biological group (i.e. M0_ctrl or M2_stim) and see if there are any outliers. 
-For this, I will do an unadjusted PCA per library pool and then look if I see patterns. 
+In 02b_SVA_with_known_covar_outlier_detection.rmd we have looked at each batch and have removed (or corrected) wrong samples. 
+Here we will rerun SVA one final time and replot the UMAPs. I expect the results will not change much, just a bit cleaner
 
 ```{r}
-dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds <- readRDS( here("QC", "results", "dds_final.rds"))
 mdata <- colData(dds) %>% data.frame()
-sva_seq <- readRDS(here("QC", "results", "sva_incl_line_5SVs.rds"))
-dds <- estimateSizeFactors(dds)
-tmp_mdata <- cbind(mdata, sva_seq$sv %>% data.frame() %>% magrittr::set_colnames(paste0("SV", 1:5)))
 norm_data <- assay(vst(dds, blind = TRUE))
 
-mod <- model.matrix(~group, tmp_mdata)
+mod <- model.matrix(~ line + group, colData(dds))
+mod0 <- model.matrix(~line, colData(dds))
+
+# runs long, even with parallization
+svseq <- svaseq(norm_data, mod, mod0, n.sv = 5)
+saveRDS(svseq, here("QC", "results", "sva_5_final.rds"))
+
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV", 1:5)
+mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+mod <- model.matrix(~group, mdata)
+# Create the formula dynamically
 formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
-mod0 <- model.matrix(formula, tmp_mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+mod0 <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
 
 # adjust the counts using limma
 adjusted_counts <- limma::removeBatchEffect(norm_data,
@@ -192,23 +80,6 @@ adjusted_counts <- limma::removeBatchEffect(norm_data,
     design = mod
 )
 
-# anisogenic replicates
-mdata <- mdata %>%
-    mutate(group = paste(state, condition, sep="_")) 
-
-cor_result <- lapply(unique(mdata$group), function(x){
-    samples <- mdata %>%
-        filter(group == x)  %>% 
-        pull(sampleid)
-
-    tmp_cnts <- adjusted_counts[, samples]
-    cor_map <- cor(tmp_cnts, method = "spearman")
-    return(cor_map)
-})
-names(cor_result) <- unique(mdata$group)
-
-# some have very low correlation.
-sapply(cor_result, min)
 ```
 
 
@@ -925,6 +796,7 @@ show_batch(
     tsne = TRUE
 ) %>% wrap_plots()
 
+
 show_batch(
     dds = dds,
     value = "65609",
@@ -1066,6 +938,7 @@ show_batch(
     value = "71670",
     sampleids = swaps_71670,
     output_adjusted = F,
+    tsne = TRUE
 ) %>% wrap_plots()
 
 # ALL of these are the same cell line. It is highly likely that they actually have the wrong annotation.
@@ -1225,42 +1098,6 @@ show_batch(
     sampleids = swaps_79704,
     output_adjusted = T
 )
-```
-
-```{r}
-# remove all the detected outliers from our data
-all_outliers <- c(
-    swaps_65609, swaps_69511, swaps_70163,
-    swaps_79551, swaps_79552, swaps_79704
-)
-dds_cleaned <- dds[, !dds$sampleid %in% all_outliers]
-
-# for the sample swap, change the labels.
-
-# MM_oxLDL8121200: M0_stim -> M0_ctrl
-# MM_oxLDL8121201: M1_ctrl -> M0_stim
-# MM_oxLDL8121202: M1_stim -> M1_ctrl
-# MM_oxLDL8121203: M2_ctrl -> M1_stim
-# MM_oxLDL8121204: M2_stim -> M2_ctrl
-# MM_oxLDL8121205: M0_ctrl -> M2_stim
-
-# update the mdata accordingly: 
-mdata_new <- colData(dds_cleaned) %>% data.frame()
-
-mdata_new %>% mutate(group = replace(group, var))
-
-mdata_new[mdata_new$sampleid =="MM_oxLDL8121200", "group"] <- "M0_ctrl"
-mdata_new[mdata_new$sampleid =="MM_oxLDL8121201", "group"] <- "M0_stim"
-mdata_new[mdata_new$sampleid =="MM_oxLDL8121202", "group"] <- "M1_ctrl"
-mdata_new[mdata_new$sampleid =="MM_oxLDL8121203", "group"] <- "M1_stim"
-mdata_new[mdata_new$sampleid =="MM_oxLDL8121204", "group"] <- "M2_ctrl"
-mdata_new[mdata_new$sampleid =="MM_oxLDL8121205", "group"] <- "M2_stim"
-
-mdata_new$group <- substr(mdata_new$group, start = 1, stop = 2)
-mdata_new$condition <- substr(mdata_new$group, start = 4, stop = 7)
-colData(dds_cleaned) <- DataFrame(mdata_new)
-
-saveRDS(dds_cleaned, here("QC", "results", "dds_final.rds"))
 ```
 
 

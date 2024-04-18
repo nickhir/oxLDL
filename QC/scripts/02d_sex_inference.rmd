@@ -1,0 +1,71 @@
+---
+title: "Try sex inference"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+```{r, load libraries}
+library(glmnet)
+library(tidyverse)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **Introduction**
+In 02b_SVA_with_known_covar_outlier_detection.rmd we have looked at each batch and have removed (or corrected) wrong samples. 
+Here we will rerun SVA one final time and replot the UMAPs. I expect the results will not change much, just a bit cleaner
+
+```{r}
+dds <- readRDS( here("QC", "results", "dds_final.rds"))
+mdata <- colData(dds) %>% data.frame()
+norm_data <- assay(vst(dds, blind = TRUE))
+
+mod <- model.matrix(~ line + group, colData(dds))
+mod0 <- model.matrix(~line, colData(dds))
+
+# svseq <- svaseq(norm_data, mod, mod0, n.sv = 5)
+# saveRDS(svseq, here("QC", "results", "sva_5_final.rds"))
+svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV", 1:5)
+mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+mod <- model.matrix(~group, mdata)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
+mod0 <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts <- limma::removeBatchEffect(norm_data,
+    batch = dds$line,
+    covariates = mod0,
+    design = mod
+)
+
+```
+
+
