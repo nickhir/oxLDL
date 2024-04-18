@@ -225,7 +225,8 @@ density_scatter <- function(
         ylab(ylab) +
         theme_Publication() +
         scale_color_manual(values = colors) +
-        scale_fill_manual(values = colors)
+        scale_fill_manual(values = colors) +
+        guides(color=guide_legend(nrow=2,byrow=TRUE), fill=guide_legend(nrow=2,byrow=TRUE))
     
 
     
