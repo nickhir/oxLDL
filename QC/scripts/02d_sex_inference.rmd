@@ -26,6 +26,7 @@ knitr::opts_chunk$set(
 
 ```{r, load libraries}
 library(glmnet)
+library(DESeq2)
 library(tidyverse)
 
 library(here)
@@ -35,37 +36,77 @@ source(here("helper_functions.R"))
 
 
 ## **Introduction**
-In 02b_SVA_with_known_covar_outlier_detection.rmd we have looked at each batch and have removed (or corrected) wrong samples. 
-Here we will rerun SVA one final time and replot the UMAPs. I expect the results will not change much, just a bit cleaner
+Try and use the [SexInference](https://github.com/SexChrLab/SexInference) scripts to infer sex of our people (look for mismatches).
 
+
+#### Setup our data
 ```{r}
+# the script needs the output from salmon
 dds <- readRDS( here("QC", "results", "dds_final.rds"))
 mdata <- colData(dds) %>% data.frame()
-norm_data <- assay(vst(dds, blind = TRUE))
 
-mod <- model.matrix(~ line + group, colData(dds))
-mod0 <- model.matrix(~line, colData(dds))
+raw_counts <- data.table::fread(
+    here("preprocessing", "results", "gene_counts_length_scaled_filtered.tsv")
+) %>% data.frame()
+raw_counts_matrix <- as.matrix(raw_counts[,2:ncol(raw_counts)])
+rownames(raw_counts_matrix) <- raw_counts$gene_name
 
-# svseq <- svaseq(norm_data, mod, mod0, n.sv = 5)
-# saveRDS(svseq, here("QC", "results", "sva_5_final.rds"))
-svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
-SVs <- svseq$sv
-colnames(SVs) <- paste0("SV", 1:5)
-mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+raw_counts_matrix <- raw_counts_matrix[, dds$sampleid]
 
-# use limmas removeBatchEffects to emulate what the linear model will eventually do.
-mod <- model.matrix(~group, mdata)
-# Create the formula dynamically
-formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
-mod0 <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
-
-# adjust the counts using limma
-adjusted_counts <- limma::removeBatchEffect(norm_data,
-    batch = dds$line,
-    covariates = mod0,
-    design = mod
-)
 
 ```
+
+
+#### Load the package data and train the glm
+```{r}
+library(caret)
+training_model_data = "/rds/user/nh608/hpc-work/software/SexInference/RNAseq/training_data/for_rna_sex_check.tsv"
+data <- data.table::fread(training_model_data, data.table = FALSE)
+# Split the data into training and test set
+set.seed(123)
+training.samples <- data$sex %>% 
+  createDataPartition(p = 0.8, list = FALSE)
+train.data  <- data[training.samples, ]
+test.data <- data[-training.samples, ]
+
+# remove label
+x <- train.data[, -ncol(train.data)] %>% as.matrix()
+# Convert the outcome (class) to a numerical variable
+y <- ifelse(train.data$sex == "female", 1, 0)
+cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
+plot(cv.lasso)
+cv.lasso$lambda.min
+
+coef(cv.lasso, cv.lasso$lambda.min)
+coef(cv.lasso, cv.lasso$lambda.1se)
+
+# Final model with lambda.min
+lasso.model <- glmnet(x, y,
+    alpha = 1, family = "binomial",
+    lambda = cv.lasso$lambda.min
+)
+
+# Make prediction on test data
+x.test <- test.data[, -ncol(test.data)] %>% as.matrix()
+probabilities <- lasso.model %>% predict(newx = x.test, type="response")
+predicted.classes <- ifelse(probabilities > 0.5, "female", "male")
+# Model accuracy
+observed.classes <- test.data$sex
+mean(predicted.classes == observed.classes)
+
+
+
+our_data <- t(raw_counts_matrix[c("XIST", "EIF1AY", "KDM5D", "UTY", "DDX3Y", "RPS4Y1"), ]) %>% as.matrix()
+probabilities <- lasso.model %>% predict(newx = our_data, type="response")
+predicted.classes <- ifelse(probabilities > 0.5, "Female", "Male") %>% data.frame()
+all(rownames(predicted.classes) == colnames(dds))
+
+table(predicted.classes[, 1] == dds$sex)
+
+
+
+
+```
+
 
 

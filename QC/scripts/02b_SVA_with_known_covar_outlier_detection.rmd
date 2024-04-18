@@ -1256,7 +1256,7 @@ mdata_new[mdata_new$sampleid =="MM_oxLDL8121203", "group"] <- "M1_stim"
 mdata_new[mdata_new$sampleid =="MM_oxLDL8121204", "group"] <- "M2_ctrl"
 mdata_new[mdata_new$sampleid =="MM_oxLDL8121205", "group"] <- "M2_stim"
 
-mdata_new$group <- substr(mdata_new$group, start = 1, stop = 2)
+mdata_new$state <- substr(mdata_new$group, start = 1, stop = 2)
 mdata_new$condition <- substr(mdata_new$group, start = 4, stop = 7)
 colData(dds_cleaned) <- DataFrame(mdata_new)
 
