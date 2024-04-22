@@ -28,7 +28,8 @@ knitr::opts_chunk$set(
 library(glmnet)
 library(DESeq2)
 library(tidyverse)
-
+library(caret)
+library(glmnet)
 library(here)
 source(here("plot_theme.R"))
 source(here("helper_functions.R"))
@@ -50,7 +51,6 @@ raw_counts <- data.table::fread(
 ) %>% data.frame()
 raw_counts_matrix <- as.matrix(raw_counts[,2:ncol(raw_counts)])
 rownames(raw_counts_matrix) <- raw_counts$gene_name
-
 raw_counts_matrix <- raw_counts_matrix[, dds$sampleid]
 
 
@@ -59,7 +59,6 @@ raw_counts_matrix <- raw_counts_matrix[, dds$sampleid]
 
 #### Load the package data and train the glm
 ```{r}
-library(caret)
 training_model_data = "/rds/user/nh608/hpc-work/software/SexInference/RNAseq/training_data/for_rna_sex_check.tsv"
 data <- data.table::fread(training_model_data, data.table = FALSE)
 # Split the data into training and test set
@@ -74,11 +73,6 @@ x <- train.data[, -ncol(train.data)] %>% as.matrix()
 # Convert the outcome (class) to a numerical variable
 y <- ifelse(train.data$sex == "female", 1, 0)
 cv.lasso <- cv.glmnet(x, y, alpha = 1, family = "binomial")
-plot(cv.lasso)
-cv.lasso$lambda.min
-
-coef(cv.lasso, cv.lasso$lambda.min)
-coef(cv.lasso, cv.lasso$lambda.1se)
 
 # Final model with lambda.min
 lasso.model <- glmnet(x, y,
@@ -99,14 +93,162 @@ mean(predicted.classes == observed.classes)
 our_data <- t(raw_counts_matrix[c("XIST", "EIF1AY", "KDM5D", "UTY", "DDX3Y", "RPS4Y1"), ]) %>% as.matrix()
 probabilities <- lasso.model %>% predict(newx = our_data, type="response")
 predicted.classes <- ifelse(probabilities > 0.5, "Female", "Male") %>% data.frame()
-all(rownames(predicted.classes) == colnames(dds))
-
-table(predicted.classes[, 1] == dds$sex)
+```
 
 
+### Add the predicted sex to the mdata
+```{r}
+all(rownames(predicted.classes) == mdata$sampleid)
+mdata <- predicted.classes %>%
+    rownames_to_column("sampleid") %>%
+    dplyr::rename(predicted_sex = s0) %>%
+    left_join(mdata, ., by = "sampleid")
 
 
+# for 41 lines there is an apparent sex mismatch which seems very high
+mdata %>%
+    distinct(line, .keep_all = TRUE) %>%
+    filter(sex != predicted_sex) %>% nrow()
+
+
+
+# visualize the expression of these genes and the missannotated samples:
+
+# for each celline, calculate the average expression of these genes for all conditions
+plot_data <- counts(dds, normalized = T)[c("XIST", "EIF1AY", "KDM5D", "UTY", "DDX3Y", "RPS4Y1"), ] %>%
+    t() %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata %>% select(sampleid, line, sex, predicted_sex), by = "sampleid") %>%
+    group_by(line, gene) %>%
+    mutate(mean_expr = mean(norm_cnts)) %>%
+    ungroup() %>%
+    distinct(gene, line, mean_expr, .keep_all = TRUE)
+
+plot_data$mismatch <- ifelse(plot_data$sex != plot_data$predicted_sex, "mismatch", "match")
+
+ggplot(plot_data, aes(x = sex, y = mean_expr, color = mismatch)) +
+    geom_jitter(width = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "darkgreen",
+        width = 0.05,
+        aes(group = sex),
+        position = position_dodge(width = 0.5)
+    ) +
+    scale_color_manual(values = c("black", "red")) +
+    theme(legend.position = "none")
+
+
+ggplot(plot_data, aes(x = predicted_sex, y = mean_expr, color = mismatch)) +
+    geom_jitter(width = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "darkgreen",
+        width = 0.05,
+        aes(group = predicted_sex),
+        position = position_dodge(width = 0.5)
+    ) +
+    scale_color_manual(values = c("black", "red")) +
+    theme(legend.position = "none")
+
+
+
+# check the training data
+traing_data_plot <- data %>% 
+    rownames_to_column() %>%
+    rowwise() %>%
+    mutate(libsize = sum(c_across(XIST:RPS4Y1))) %>% 
+    mutate(across(XIST:RPS4Y1, ~ ./libsize)) %>% # normalize the counts by libsize 
+    pivot_longer(., cols = XIST:RPS4Y1, values_to = "cnts", names_to = "gene")  
+
+
+ggplot(traing_data_plot, aes(x = sex, y = cnts))+
+    geom_jitter(width = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "darkgreen",
+        width = 0.05,
+        aes(group = sex),
+        position = position_dodge(width = 0.5)
+    ) +
+    theme(legend.position = "none")
 ```
 
 
 
+### Get external information
+```{r}
+mdata_hipsci_donor <- data.table::fread(
+    here("data", "oxLDL_data", "HipSci", "HipSci_donors.tsv")
+) %>% data.frame()
+
+mdata_hipsci_donor$Name <- mdata_hipsci_donor$Name %>%
+    str_remove_all(., "HPSI-") %>%
+    unique()
+
+mdata_hipsci_donor <- mdata_hipsci_donor %>% distinct(Name, .keep_all = TRUE)
+
+mdata_oxldl <- mdata %>% distinct(line, .keep_all=TRUE)
+mdata_oxldl$hipsci_donor <- substr(mdata_oxldl$line, 1, 4) 
+
+mdata_oxldl <-  mdata_oxldl %>%
+    left_join(., mdata_hipsci_donor %>%
+        select(hipsci_sex = Sex, Name),
+    by = c("hipsci_donor" = "Name")
+    )
+
+# all match the downloaded ressource. 
+table(mdata_oxldl$sex == mdata_oxldl$hipsci_sex)
+```
+
+
+### see if the gender mismatch are the same as in the SV plot
+During our QC we noticed some samples that seemed to be in the wrong cloud in the SV plot.
+```{r}
+## recreate the SV plot
+svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV", 1:5)
+mdata <- cbind(mdata, SVs)
+mdata$mismatch <-  ifelse(mdata$sex != mdata$predicted_sex, "mismatch", "match")
+
+ggplot(mdata, aes(SV1, SV2, color = sex)) +
+    geom_point(size = 3) +
+    geom_point(
+        data = mdata %>% filter(mismatch == "mismatch"), aes(SV1, SV2), color = "red", shape = 21,
+        stroke = 2, size = 3.3, inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    theme_Publication() +
+    chameleon::scale_color_chameleon()
+
+
+
+ggplot(mdata, aes(SV1, SV2, color = predicted_sex)) +
+    geom_point(size = 3) +
+    geom_point(
+        data = mdata %>% filter(mismatch == "mismatch"), aes(SV1, SV2), color = "red", shape = 21,
+        stroke = 2, size = 3.3, inherit.aes = FALSE, show.legend = FALSE
+    ) +
+    theme_Publication() +
+    chameleon::scale_color_chameleon()
+
+
+
+
+ 
+
+table(mdata$sex)
+table(mdata$predicted_sex)
+
+```

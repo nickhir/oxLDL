@@ -1227,6 +1227,10 @@ show_batch(
 )
 ```
 
+### Conclusion
+Remove the outliers from the data set and save the new object. In the next step (02c_SVA_with_known_covar_outlier_removal.rmd) 
+we are rerunning SVA and recreate the plots showing the results.
+
 ```{r}
 # remove all the detected outliers from our data
 all_outliers <- c(
