@@ -31,6 +31,8 @@ library(tidyverse)
 library(caret)
 library(glmnet)
 library(here)
+library(httpgd)
+
 source(here("plot_theme.R"))
 source(here("helper_functions.R"))
 ```
@@ -52,8 +54,6 @@ raw_counts <- data.table::fread(
 raw_counts_matrix <- as.matrix(raw_counts[,2:ncol(raw_counts)])
 rownames(raw_counts_matrix) <- raw_counts$gene_name
 raw_counts_matrix <- raw_counts_matrix[, dds$sampleid]
-
-
 ```
 
 
@@ -170,7 +170,7 @@ traing_data_plot <- data %>%
     pivot_longer(., cols = XIST:RPS4Y1, values_to = "cnts", names_to = "gene")  
 
 
-ggplot(traing_data_plot, aes(x = sex, y = cnts))+
+ggplot(traing_data_plot , aes(x = sex, y = cnts))+
     geom_jitter(width = 0.1) +
     facet_wrap(~gene, scales = "free_y") +
     theme_Publication() +
@@ -250,5 +250,10 @@ ggplot(mdata, aes(SV1, SV2, color = predicted_sex)) +
 
 table(mdata$sex)
 table(mdata$predicted_sex)
+
+```
+
+```{r}
+
 
 ```

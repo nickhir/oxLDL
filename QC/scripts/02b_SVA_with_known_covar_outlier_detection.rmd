@@ -997,6 +997,7 @@ show_batch(
     sampleids = swaps_69511,
     output_adjusted = T
 )
+
 swaps_69511 <- c("MM_oxLDL7954434", "MM_oxLDL7954415")
 
 show_batch(
@@ -1132,12 +1133,15 @@ show_batch(
 
 #### 79583
 ```{r}
-show_batch(
+p <- show_batch(
     dds = dds,
     value = "79583",
     output_adjusted = F,
     tsne = FALSE
 ) %>% wrap_plots()
+
+
+
 
 # looks good!
 ```
