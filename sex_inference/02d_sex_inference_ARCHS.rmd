@@ -1,0 +1,130 @@
+---
+title: "Try sex inference"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+```{r, load libraries}
+library(glmnet)
+library(DESeq2)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(here)
+library(httpgd)
+library(rhdf5)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **Introduction**
+We have downloaded the whole ARCH4S dataset. Using a python script (extract_mdata.ipynb) we have extracted
+all samples in that dataset that come from macrophage and that have sex information available. 
+Here, we will fit the elastic net regression to predict sex.
+
+
+```{r}
+data <- fread(here("sex_inference", "counts_macrophage.tsv"))
+# some genes occure multiple times... no idea why.
+# we will just sum them together if this happens
+data <- data %>%
+    group_by(gene) %>%
+    summarise(across(everything(), sum)) %>%
+    column_to_rownames("gene") %>% 
+    t()
+
+
+
+mdata <- fread(here("sex_inference", "mdata_macrophage.tsv"))
+mdata$SEX <- ifelse(mdata$SEX == "F", "FEMALE", "MALE")
+
+stopifnot(mdata$sampleID==rownames(data))
+# Split the data into training and test set
+set.seed(123)
+training_samples <- mdata$SEX %>% 
+  createDataPartition(p = 0.85, list = FALSE)
+train_data  <- data[training_samples, ]
+test_data <- data[-training_samples, ]
+train_mdata <- mdata[training_samples, ]
+test_mdata <- mdata[-training_samples, ]
+
+
+# Prepare the matrices for glmnet
+x_train <- as.matrix(train_data)
+y_train <- train_mdata$SEX
+
+x_test <-  as.matrix(test_data)
+y_test <- test_mdata$SEX
+
+
+# Fit logistic regression using cross validation
+
+cv_fit <- cv.glmnet(x_train, y_train,
+    family = "binomial",
+    type.measure = "class", 
+    n.folds=10, 
+    alpha = 1 # 1 corresponds to lasso regression
+)
+plot(cv_fit)
+
+# Best lambda
+best_lambda <- cv_fit$lambda.min
+print(best_lambda)
+
+
+# Final model with lambda.min
+lasso.model <- glmnet(x_train, y_train,
+    alpha = 1, family = "binomial",
+    lambda =best_lambda
+)
+
+
+# Make prediction on test data
+probabilities <- lasso.model %>% predict(newx = x_test, type="response")
+predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
+
+# Model accuracy
+mean(predicted.classes == y_test)
+
+
+
+x <- coef(lasso.model) %>% as.matrix()
+
+x %>% data.frame() %>% arrange(s0)
+
+
+
+
+
+x["XIST", ]
+
+
+
+
+```
+
+
+
+
+

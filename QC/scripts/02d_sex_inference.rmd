@@ -253,7 +253,3 @@ table(mdata$predicted_sex)
 
 ```
 
-```{r}
-
-
-```

@@ -1,22 +1,12 @@
-software
-*data
-*html
-*tar
-*cojo
-*qs
-*rds
-*tsv
-*pdf
-*.Rproj*
-*svg
-*png
-.Rhistory
-*.Rproj
-!.gitignore
+# Ignore everything
+*
+
+# But do not ignore directories, as ignoring directories can sometimes lead to unexpected behavior in Git
+!*/
+
+# Except for files with these extensions
 !*.R
 !*.Rmd
-.Rproj.user
-*bgz
-*tbi
-*xlsx
-*sv.gz
+!*.rmd
+!*.ipynb
+!*.py

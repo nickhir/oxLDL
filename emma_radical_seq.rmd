@@ -1,0 +1,95 @@
+---
+title: "RADICAL Seq Eval"
+author: "Nick Hirschmüller"
+date: "r format(Sys.time(), '%d %B, %Y')"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(GenomicRanges)
+```
+
+
+
+
+### Load in the data
+
+```{r}
+subset_data <- data.table::fread("Nick.bedpe.gz")
+colnames(subset_data) <- c(
+    "RNA_chrom", "RNA_start", "RNA_end",
+    "DNA_chrom", "DNA_start", "DNA_end",
+    "seq_id", "score",
+    "strand1", "strand2",
+    "qual1", "qual2", 
+    "RNA_anno"
+)
+subset_data <- head(subset_data, 10e3) %>%
+    filter(DNA_chrom %in% c(paste0("chr", 1:22), "chrX", "chrY"))
+
+# load in bins
+bins <- data.table::fread("/rds/user/nh608/hpc-work/trash/genome.25kb.bed", col.names = c("chrom", "start", "end")) %>%
+    filter(chrom %in% c(paste0("chr", 1:22), "chrX", "chrY")) %>% 
+    rownames_to_column("binID")
+```
+
+
+```{r}
+RNA_of_interest <- "MALAT1"
+
+ROI_table <- subset_data %>%
+    filter(RNA_anno == RNA_of_interest) 
+
+gr_bins <- GRanges(seqnames = Rle(bins$chrom), 
+                   ranges = IRanges(start = bins$start, end = bins$end))
+
+gr_df <- GRanges(
+    seqnames = Rle(ROI_table$DNA_chrom),
+    ranges = IRanges(start = ROI_table$DNA_start, end = ROI_table$DNA_end)
+)
+
+# Sometimes
+overlaps <- findOverlaps(gr_df, gr_bins)
+
+ol_widths <- width(pintersect(gr_df[queryHits(overlaps)], gr_bins[subjectHits(overlaps)]))
+
+# quick qc if something went wrong
+stopifnot(length(ol_widths) == length(overlaps) & length(overlaps) == length(gr_df))
+
+
+overlaps_df <- overlaps %>%
+    as.data.frame() %>%
+    mutate(intersection_size = ol_widths)
+
+overlaps_df_final <- overlaps_df %>%
+    group_by(queryHits) %>%
+    slice_max(intersection_size, n = 1, with_ties = FALSE) %>% # this is where we select the bin, where the overlap is biggest
+    ungroup()
+
+# just doing some reformating to get the final DF
+interaction_df <- overlaps_df_final %>%
+    group_by(subjectHits) %>%
+    tally() %>%
+    magrittr::set_colnames(c("binID", "inter_freq")) %>%
+    mutate(binID = as.character(binID),
+    inter_freq = as.integer(inter_freq))
+
+bins <- left_join(bins, interaction_df, by = "binID")
+bins$inter_freq <- ifelse(is.na(bins$inter_freq), "0", bins$inter_freq)
+```
