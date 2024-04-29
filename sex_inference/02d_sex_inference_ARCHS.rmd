@@ -28,11 +28,13 @@ knitr::opts_chunk$set(
 library(glmnet)
 library(DESeq2)
 library(tidyverse)
+library(data.table)
 library(caret)
 library(glmnet)
 library(here)
 library(httpgd)
-library(rhdf5)
+library(patchwork)
+
 source(here("plot_theme.R"))
 source(here("helper_functions.R"))
 ```
@@ -41,28 +43,205 @@ source(here("helper_functions.R"))
 ## **Introduction**
 We have downloaded the whole ARCH4S dataset. Using a python script (extract_mdata.ipynb) we have extracted
 all samples in that dataset that come from macrophage and that have sex information available. 
-Here, we will fit the elastic net regression to predict sex.
+Note: We have changed from macrophages to whole blood. Reason for this is that some "macrophage" datasets are 
+acutally just using whole blood when you look them up...
+
+Here, we will fit the lasso regression to predict sex.
+
+```{r define functions}
+inverse_rank_norm <- function(x) {
+    qnorm((rank(x, na.last = "keep") - 0.5) / sum(!is.na(x)))
+}
+```
 
 
 ```{r}
-data <- fread(here("sex_inference", "counts_macrophage.tsv"))
+# load in mdata
+mdata <- fread(here("sex_inference", "mdata_whole_blood.tsv"))
+mdata$sex <- ifelse(mdata$sex == "F", "FEMALE", "MALE")
+mdata <- mdata %>% na.omit()
+
+# only keep series ids that have used both males and females
+keep_ids <- mdata %>%
+    group_by(series_id, sex) %>%
+    tally() %>%
+    ungroup() %>%
+    group_by(series_id) %>%
+    tally() %>%
+    filter(n == 2) %>%
+    pull(series_id)
+
+mdata <- mdata %>%
+    filter(series_id %in% keep_ids)
+
+
+# load in count data
+data <- fread(here("sex_inference", "counts_whole_blood.tsv.gz")) 
+
+# only keep samples that pass mdata filter
+data <- data.frame(data)[, c("gene", mdata$sampleID)]
+
+# read in our data so we know which genes are "available"
+our_dds <- readRDS(here("QC", "results", "dds_final.rds"))
+
+# figure out which genes are shared between the datasets
+shared_genes <- intersect(rownames(our_dds), data$gene)
+
+data <- data %>%
+    filter(gene %in% shared_genes)
+
 # some genes occure multiple times... no idea why.
 # we will just sum them together if this happens
 data <- data %>%
     group_by(gene) %>%
     summarise(across(everything(), sum)) %>%
-    column_to_rownames("gene") %>% 
-    t()
+    column_to_rownames("gene") 
+
+# reorder the gene names
+data <- data[match(shared_genes, rownames(data)), ]
+
+# create a deseq2 object for easy handling manipulation of the data
+dds <- DESeqDataSetFromMatrix(
+    countData = data,
+    colData = mdata %>% column_to_rownames("sampleID"),
+    design = ~1
+)
 
 
+#norm_data <- apply(counts(dds), 1, inverse_rank_norm)
 
-mdata <- fread(here("sex_inference", "mdata_macrophage.tsv"))
-mdata$SEX <- ifelse(mdata$SEX == "F", "FEMALE", "MALE")
+vsd_data <- vst(dds, blind = TRUE)
+norm_data <- assay(vsd_data)
+```
 
-stopifnot(mdata$sampleID==rownames(data))
+
+### Some visualizations
+```{r}
+#################
+# CALCULATE PCA #
+#################
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sampleID") %>%
+    left_join(., mdata, by = c("sampleID" = "sampleID"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap::umap(t(norm_data))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleID") %>% 
+    left_join(., mdata)
+
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+pca_plot <- density_scatter(
+    df = pca_plot_df,
+    x_variable = "PC1",
+    y_variable = "PC2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+umap_plot <- density_scatter(
+    df = umap_plot_df,
+    x_variable = "UMAP1",
+    y_variable = "UMAP2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+)
+
+
+```
+
+
+### Adjust counts
+```{r}
+# adjust counts using limma
+adjusted_counts <- limma::removeBatchEffect(
+    norm_data,
+    batch = dds$series_id,
+    design = model.matrix(~sex, colData(dds))
+)
+
+# recalculate PCA with adjusted counts
+pca_data_corrected <- PCAtools::pca(
+    adjusted_counts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+
+pca_plot_df <- pca_data_corrected$rotated[, 1:20] %>%
+    rownames_to_column("sampleID") %>%
+    left_join(., mdata, by = c("sampleID" = "sampleID"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data_corrected$variance[i]
+}
+
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data_corrected <- umap::umap(t(adjusted_counts))
+umap_plot_df <- umap_data_corrected$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleID") %>% 
+    left_join(., mdata)
+
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+
+pca_plot_corrected <- density_scatter(
+    df = pca_plot_df,
+    x_variable = "PC1",
+    y_variable = "PC2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+
+umap_plot_corrected <- density_scatter(
+    df = umap_plot_df,
+    x_variable = "UMAP1",
+    y_variable = "UMAP2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+)
+
+
+```
+
+
+## Fit the model
+
+```{r}
 # Split the data into training and test set
+data <- t(adjusted_counts)
 set.seed(123)
-training_samples <- mdata$SEX %>% 
+training_samples <- mdata$sex %>% 
   createDataPartition(p = 0.85, list = FALSE)
 train_data  <- data[training_samples, ]
 test_data <- data[-training_samples, ]
@@ -72,10 +251,10 @@ test_mdata <- mdata[-training_samples, ]
 
 # Prepare the matrices for glmnet
 x_train <- as.matrix(train_data)
-y_train <- train_mdata$SEX
+y_train <- train_mdata$sex
 
 x_test <-  as.matrix(test_data)
-y_test <- test_mdata$SEX
+y_test <- test_mdata$sex
 
 
 # Fit logistic regression using cross validation
@@ -94,6 +273,8 @@ print(best_lambda)
 
 
 # Final model with lambda.min
+# this uses all of the train data
+# the cv model above just the best fold, i.e. misses 1/10 of the data
 lasso.model <- glmnet(x_train, y_train,
     alpha = 1, family = "binomial",
     lambda =best_lambda
@@ -107,24 +288,70 @@ predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
 # Model accuracy
 mean(predicted.classes == y_test)
 
+predictive_genes <- coef(lasso.model) %>%
+    as.matrix() %>%
+    data.frame() %>%
+    filter(s0 > 0) %>%
+    rownames()
 
 
-x <- coef(lasso.model) %>% as.matrix()
-
-x %>% data.frame() %>% arrange(s0)
-
-
-
-
-
-x["XIST", ]
-
-
-
-
+2206.75-3*18-753.58
 ```
 
 
 
+```{r}
+dds <- readRDS(here("QC", "results", "dds_final.rds"))
+
+# order the genes like our training data
+dds <- dds[rownames(dds) %in% shared_genes, ]
+dds <- dds[match(shared_genes, rownames(dds)),]
+stopifnot(all(colnames(data) == rownames(dds)))
+
+norm_data <- assay(vst(dds, blind = TRUE))
+mod <- model.matrix(~ line + group, colData(dds))
+mod0 <- model.matrix(~line, colData(dds))
+svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV", 1:5)
+mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
 
 
+# use limmas removeBatchEffects to emulate what the linear model will eventually do.
+mod <- model.matrix(~group, mdata)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
+mod0 <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts_our_data <- limma::removeBatchEffect(norm_data,
+    batch = dds$line,
+    covariates = mod0,
+    design = mod
+) %>% t()
+
+t(adjusted_counts)[,predictive_genes] %>% summary()
+t(norm_data)[,predictive_genes] %>% summary()
+
+
+stopifnot(all(colnames(adjusted_counts_our_data) == colnames(data)))
+probabilities_our_data <- lasso.model %>% predict(
+    newx = adjusted_counts_our_data,
+    type = "response"
+)
+predicted.classes <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
+
+all(mdata$sampleid == rownames(predicted.classes))
+
+mdata$predicted_sex <- predicted.classes[,1]
+
+table(mdata$predicted_sex != mdata$sex)
+```
+
+```{r}
+dds
+n_distinct(colData(dds)$line)
+
+table(dds$oxldlset) %>% sort()
+
+```

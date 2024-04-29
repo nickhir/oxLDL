@@ -378,6 +378,7 @@ for (k in SV_pairings) {
 }
 
 ```
+
 ### Replot the final data
 ```{r recreate the plots one final time}
 hs_msigdb_df <- msigdbr::msigdbr(species = "Homo sapiens")
@@ -540,6 +541,7 @@ for (k in PC_pairings) {
 ##############
 # UMAP PLOTS #
 ##############
+
 plots <- lapply(columns_to_plot, function(x) {
     p <- density_scatter(
         df = umap_plot_df,

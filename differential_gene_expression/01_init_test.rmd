@@ -38,47 +38,42 @@ source(here("helper_functions.R"))
 ## Introduction
 
 ```{r}
-dds <- readRDS(here("QC", "results", "dds_libsize_outliers_removed.rds"))
+dds <- readRDS(here("QC", "results", "dds_final.rds"))
 mdata <- colData(dds) %>% data.frame()
-# we will just pick 15 sva for now.
-sva_res <- readRDS(here("QC", "results", "sva_15SVs.rds"))
-SVs <- sva_res$sv
-colnames(SVs) <- paste0("SV", 1:15)
-mdata <- cbind(mdata %>% select(-contains("SV")), data.frame(SVs))
-formula <- paste("~", paste0("SV", 1:15, collapse = " + "))
+svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
+SVs <- svseq$sv
+colnames(SVs) <- paste0("SV", 1:5)
+mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+formula <- paste("~", paste0("SV", 1:5, collapse = " + "))
 dds <- DESeqDataSetFromMatrix(counts(dds),
     colData = mdata,
-    design = as.formula(paste(formula, "sampletype", sep = "+"))
+    design = as.formula(paste(formula, "line + group", sep = "+"))
 )
 
-dds <- DESeqDataSetFromMatrix(counts(dds),
-    colData = mdata,
-    design = ~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 +
-        SV11 + SV12 + SV13 + SV14 + SV15 + sampletype
-)
 # runs very long... parallelization is necessary 
 deseq_res <- DESeq(dds, parallel = TRUE)
 resultsNames(deseq_res)
 
 
 design <- model.matrix(~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 +
-    SV11 + SV12 + SV13 + SV14 + SV15 + sampletype, colData(dds))
+    SV11 + SV12 + SV13 + SV14 + SV15 + group, colData(dds))
 
-#colnames(design) <- str_remove_all(colnames(design), "sampletype")
+#colnames(design) <- str_remove_all(colnames(design), "group")
 contrasts <- limma::makeContrasts(
-    M0_comp = sampletypeM0_oxLDL - sampletypeM0_0,
-    M1_comp = sampletypeM1_oxLDL - sampletypeM1_0,
-    M2_comp = sampletypeM2_oxLDL - sampletypeM2_0,
-    M1vsM0_oxLDL = sampletypeM1_oxLDL - sampletypeM0_oxLDL, 
-    M2vsM0_oxLDL = sampletypeM2_oxLDL - sampletypeM0_oxLDL, 
-    M2vsM1_oxLDL = sampletypeM2_oxLDL - sampletypeM1_oxLDL, 
-    M1vsM0_ctrl = sampletypeM1_0 - sampletypeM0_0, 
-    M2vsM0_ctrl = sampletypeM2_0 - sampletypeM0_0, 
-    M2vsM1_ctrl = sampletypeM2_0 - sampletypeM1_0, 
-    treat_eff_M1_vs_M0 = (sampletypeM1_oxLDL - sampletypeM1_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
-    treat_eff_M2_vs_M0 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM0_oxLDL - sampletypeM0_0),
-    treat_eff_M2_vs_M1 = (sampletypeM2_oxLDL - sampletypeM2_0) - (sampletypeM1_oxLDL - sampletypeM1_0),
-    stim_comp = (sampletypeM0_oxLDL + sampletypeM1_oxLDL + sampletypeM2_oxLDL)/3 - (sampletypeM0_0 + sampletypeM1_0 + sampletypeM2_0)/3,
+    M0_comp = groupM0_oxLDL - groupM0_0,
+    M1_comp = groupM1_oxLDL - groupM1_0,
+    M2_comp = groupM2_oxLDL - groupM2_0,
+    M1vsM0_oxLDL = groupM1_oxLDL - groupM0_oxLDL, 
+    M2vsM0_oxLDL = groupM2_oxLDL - groupM0_oxLDL, 
+    M2vsM1_oxLDL = groupM2_oxLDL - groupM1_oxLDL, 
+    M1vsM0_ctrl = groupM1_0 - groupM0_0, 
+    M2vsM0_ctrl = groupM2_0 - groupM0_0, 
+    M2vsM1_ctrl = groupM2_0 - groupM1_0, 
+    treat_eff_M1_vs_M0 = (groupM1_oxLDL - groupM1_0) - (groupM0_oxLDL - groupM0_0),
+    treat_eff_M2_vs_M0 = (groupM2_oxLDL - groupM2_0) - (groupM0_oxLDL - groupM0_0),
+    treat_eff_M2_vs_M1 = (groupM2_oxLDL - groupM2_0) - (groupM1_oxLDL - groupM1_0),
+    stim_comp = (groupM0_oxLDL + groupM1_oxLDL + groupM2_oxLDL)/3 - (groupM0_0 + groupM1_0 + groupM2_0)/3,
     levels = design
 )
 # should be 0 because 15 first rows are the surrogate variables.
@@ -89,7 +84,7 @@ sum(contrasts[0:15, ]) == 0
 stopifnot(all(rownames(contrasts) == resultsNames(deseq_res)))
 
 M2_comp_res <- results(deseq_res, contrast = contrasts[,3])
-M2_comp_res_conventional <- results(deseq_res, contrast=c("sampletype", "M2_oxLDL", "M2_0"))
+M2_comp_res_conventional <- results(deseq_res, contrast=c("group", "M2_oxLDL", "M2_0"))
 all.equal(data.frame(M2_comp_res), data.frame(M2_comp_res_conventional))
 
 deseq_results <- parallel::mclapply(1:ncol(contrasts), function(i){

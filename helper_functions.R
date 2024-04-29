@@ -202,6 +202,11 @@ density_scatter <- function(
     linewidth = 0.8, pt_size = 3, show_density = TRUE, density_plot_ratio = 0.3, alpha = 0.3, 
     add_ellipse=FALSE) {
 
+    require(ggplot2)
+    require(dplyr)
+    require(chameleon)
+    require(patchwork)
+
     # determine the colors
     if (any(is.na(colors))) {
         colors = chameleon::distinct_colors(n_distinct(df[, color_by]))$name

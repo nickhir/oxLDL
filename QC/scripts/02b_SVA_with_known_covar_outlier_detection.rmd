@@ -28,6 +28,7 @@ knitr::opts_chunk$set(
 ```{r}
 show_batch <- function(dds, value, sampleids=NA, output_adjusted = TRUE, tsne=FALSE, col_name = "batch1id"){
     dds_subset <- dds[, colData(dds)[, col_name] == value]
+    colData(dds_subset)[, col_name] <- factor(colData(dds_subset)[, col_name])
     tmp_mdata <- mdata %>% data.frame() %>% filter(sampleid %in% dds_subset$sampleid)
     norm_counts <- assay(vst(dds_subset, blind = TRUE))
     mod <- model.matrix(~group, colData(dds_subset))
@@ -57,7 +58,7 @@ show_batch <- function(dds, value, sampleids=NA, output_adjusted = TRUE, tsne=FA
 
     p_pca <- ggplot(pca_plot_df_subset, aes(x = PC1, y = PC2, color = group)) +
         geom_point(size = 3) +
-        scale_color_manual(values = c("#ee794a", "#4cf73c", "#6071d3", "#FA392A", "#0AB517", "#0b218d")) +
+        scale_color_manual(values = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d"))+
         theme_Publication() +
         ggtitle(value) +
         xlab(str_interp("PC1: ${expl_var1}% variance")) +
@@ -1157,7 +1158,8 @@ show_batch(
     value = "79704",
     sampleids = NA,
     output_adjusted = F
-)
+) %>% wrap_plots()
+
 # look at the oxldl sets that are processed in it. One thing that stands out that this is composed of
 # 5 different oxldlsets, which is very unusual.. usually just 2.
 mdata %>%
@@ -1174,28 +1176,34 @@ show_batch(
     col_name = "oxldlset",
     sampleids = c("MM_oxLDL9756613", "MM_oxLDL9756614"),
     output_adjusted = T
-)
+) 
 
-
-show_batch(
-    dds = dds,
-    value = "30",
-    col_name = "oxldlset",
-    sampleids = mdata %>% filter(oxldlset == 30) %>% pull(sampleid),
-    output_adjusted = F
-)
 
 # 31 looks very good
+show_batch(
+    dds = dds,
+    value = "31",
+    col_name = "oxldlset",
+    output_adjusted = F
+) %>% wrap_plots()
+
 # 33 looks a bit off... the stimulated ones are quite close together. Also M2 ctrl clusters to a M0_ctrl. sample is MM_oxLDL9752207
 show_batch(
     dds = dds,
     value = "33",
     col_name = "oxldlset",
-    sampleids = "MM_oxLDL9752207",
-    output_adjusted = TRUE
-) 
+    output_adjusted = F
+)  %>% wrap_plots()
+
 ## 34 looks decent
-swaps_79704 <- c("MM_oxLDL9756613", "MM_oxLDL9756614", "MM_oxLDL9752207")
+show_batch(
+    dds = dds,
+    value = "34",
+    col_name = "oxldlset",
+    output_adjusted = F
+) %>% wrap_plots()
+
+swaps_79704 <- c("MM_oxLDL9756613", "MM_oxLDL9756614")
 
 # this still looks pretty bad...
 show_batch(
@@ -1216,11 +1224,13 @@ show_batch(
     output_adjusted = F
 )[2]
 
-swaps_79704 <- c(swaps_79704, 
-"MM_oxLDL9752216", "MM_oxLDL9752168", # M0_stim outliers
-"MM_oxLDL9752218", # M1_stim outliers
-"MM_oxLDL9752179" # M0_ctrl outlier
+swaps_79704 <- c(
+    swaps_79704,
+    "MM_oxLDL9752216", "MM_oxLDL9752168", # M0_stim outliers
+    "MM_oxLDL9752218", # M1_stim outliers
+    "MM_oxLDL9752179" # M0_ctrl outlier
 )
+
 
 # this still better now.
 show_batch(

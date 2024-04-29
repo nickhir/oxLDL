@@ -88,8 +88,6 @@ predicted.classes <- ifelse(probabilities > 0.5, "female", "male")
 observed.classes <- test.data$sex
 mean(predicted.classes == observed.classes)
 
-
-
 our_data <- t(raw_counts_matrix[c("XIST", "EIF1AY", "KDM5D", "UTY", "DDX3Y", "RPS4Y1"), ]) %>% as.matrix()
 probabilities <- lasso.model %>% predict(newx = our_data, type="response")
 predicted.classes <- ifelse(probabilities > 0.5, "Female", "Male") %>% data.frame()

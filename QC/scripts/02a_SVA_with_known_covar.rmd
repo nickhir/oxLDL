@@ -366,7 +366,7 @@ dummy_ <- parallel::mclapply(3:20, function(i){
     #############
     # PCA PLOTS #
     #############
-    columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+    columns_to_plot <- c("state", "condition", "group", "ethnicity", "age", "batch1id")
 
     # create PC intervals
     PC_pairings <- lapply(1:floor(i/2), function(x) {
@@ -376,6 +376,12 @@ dummy_ <- parallel::mclapply(3:20, function(i){
     for (k in PC_pairings) {
         print(str_interp("Working on PC${k[1]} and PC${k[2]}"))
         plots <- lapply(columns_to_plot, function(x) {
+            if (x == "group") {
+                tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+            } else {
+                tmp_col = NA
+            }
+            
             expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
             expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
             p <- density_scatter(
@@ -384,6 +390,7 @@ dummy_ <- parallel::mclapply(3:20, function(i){
                 y_variable = str_interp("PC${k[2]}"),
                 color_by = x,
                 density_plot_ratio = 0.15,
+                colors = tmp_col,
                 pt_size = 1.2,
                 xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
                 ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
@@ -412,10 +419,16 @@ dummy_ <- parallel::mclapply(3:20, function(i){
     # UMAP PLOTS #
     ##############
     plots <- lapply(columns_to_plot, function(x) {
+        if(x == "group"){
+            tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+        } else {
+            tmp_col = NA
+        }
         p <- density_scatter(
             df = umap_plot_df,
             x_variable = "UMAP1",
             y_variable = "UMAP2",
+            colors = tmp_col,
             color_by = x,
             density_plot_ratio = 0.15,
             pt_size = 1.2,
