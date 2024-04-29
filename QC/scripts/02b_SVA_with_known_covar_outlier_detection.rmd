@@ -1096,8 +1096,6 @@ show_batch(
 mdata %>% filter(sampleid %in% c("MM_oxLDL9752083", "MM_oxLDL9752107"))
 
 swaps_79551 <- c("MM_oxLDL9752083", "MM_oxLDL9752107")
-
-
 ```
 
 
@@ -1220,19 +1218,20 @@ dds_subset <- dds[, !dds$sampleid %in% swaps_79704]
 show_batch(
     dds = dds_subset,
     value = "79704",
-    sampleids = mdata %>% filter(batch1id == 79704) %>% filter(group == "M0_ctrl")  %>% pull(sampleid),
+    sampleids = mdata %>% filter(batch1id == 79704) %>% filter(group == "M1_stim") %>% pull(sampleid),
     output_adjusted = F
 )[2]
+
 
 swaps_79704 <- c(
     swaps_79704,
     "MM_oxLDL9752216", "MM_oxLDL9752168", # M0_stim outliers
-    "MM_oxLDL9752218", # M1_stim outliers
+    "MM_oxLDL9752218", "MM_oxLDL9756610", # M1_stim outliers
     "MM_oxLDL9752179" # M0_ctrl outlier
 )
 
 
-# this still better now.
+# this a bit better now but still pretty shitty
 show_batch(
     dds = dds,
     value = "79704",
@@ -1264,8 +1263,6 @@ dds_cleaned <- dds[, !dds$sampleid %in% all_outliers]
 
 # update the mdata accordingly: 
 mdata_new <- colData(dds_cleaned) %>% data.frame()
-
-mdata_new %>% mutate(group = replace(group, var))
 
 mdata_new[mdata_new$sampleid =="MM_oxLDL8121200", "group"] <- "M0_ctrl"
 mdata_new[mdata_new$sampleid =="MM_oxLDL8121201", "group"] <- "M0_stim"

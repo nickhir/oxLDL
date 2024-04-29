@@ -57,7 +57,7 @@ inverse_rank_norm <- function(x) {
 
 ```{r}
 # load in mdata
-mdata <- fread(here("sex_inference", "mdata_whole_blood.tsv"))
+mdata <- fread(here("sex_inference", "results", "mdata_whole_blood.tsv"))
 mdata$sex <- ifelse(mdata$sex == "F", "FEMALE", "MALE")
 mdata <- mdata %>% na.omit()
 
@@ -76,7 +76,7 @@ mdata <- mdata %>%
 
 
 # load in count data
-data <- fread(here("sex_inference", "counts_whole_blood.tsv.gz")) 
+data <- fread(here("sex_inference", "results", "counts_whole_blood.tsv.gz")) 
 
 # only keep samples that pass mdata filter
 data <- data.frame(data)[, c("gene", mdata$sampleID)]
@@ -109,14 +109,13 @@ dds <- DESeqDataSetFromMatrix(
 
 
 #norm_data <- apply(counts(dds), 1, inverse_rank_norm)
-
 vsd_data <- vst(dds, blind = TRUE)
 norm_data <- assay(vsd_data)
 ```
 
 
 ### Some visualizations
-```{r}
+```{r, eval=FALSE}
 #################
 # CALCULATE PCA #
 #################
@@ -157,6 +156,15 @@ pca_plot <- density_scatter(
     xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
     ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
 )
+
+ggsave(
+    plot=pca_plot,
+    filename = here("sex_inference", "results", "PCA_unadjusted.png"),
+    dpi=400,
+    height=10,
+    width=12
+)
+
 
 umap_plot <- density_scatter(
     df = umap_plot_df,
@@ -232,15 +240,45 @@ umap_plot_corrected <- density_scatter(
 )
 
 
+ggsave(
+    plot = pca_plot_corrected,
+    filename = here("sex_inference", "results", "PCA_corrected.png"),
+    dpi = 400,
+    height = 10,
+    width = 12
+)
+
 ```
 
 
 ## Fit the model
 
 ```{r}
+mdata <- fread(here("sex_inference", "results", "mdata_whole_blood.tsv"))
+mdata$sex <- ifelse(mdata$sex == "F", "FEMALE", "MALE")
+mdata <- mdata %>% na.omit()
+
+# only keep series ids that have used both males and females
+keep_ids <- mdata %>%
+    group_by(series_id, sex) %>%
+    tally() %>%
+    ungroup() %>%
+    group_by(series_id) %>%
+    tally() %>%
+    filter(n == 2) %>%
+    pull(series_id)
+
+mdata <- mdata %>%
+    filter(series_id %in% keep_ids)
+
 # Split the data into training and test set
 data <- t(adjusted_counts)
-set.seed(123)
+
+
+#data <- data[, c("XIST", predictive_genes)]
+
+
+set.seed(50)
 training_samples <- mdata$sex %>% 
   createDataPartition(p = 0.85, list = FALSE)
 train_data  <- data[training_samples, ]
@@ -261,8 +299,8 @@ y_test <- test_mdata$sex
 
 cv_fit <- cv.glmnet(x_train, y_train,
     family = "binomial",
-    type.measure = "class", 
-    n.folds=10, 
+    type.measure = "class",
+    n.folds = 10,
     alpha = 1 # 1 corresponds to lasso regression
 )
 plot(cv_fit)
@@ -277,48 +315,94 @@ print(best_lambda)
 # the cv model above just the best fold, i.e. misses 1/10 of the data
 lasso.model <- glmnet(x_train, y_train,
     alpha = 1, family = "binomial",
-    lambda =best_lambda
+    lambda = best_lambda
 )
 
 
-# Make prediction on test data
-probabilities <- lasso.model %>% predict(newx = x_test, type="response")
-predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
+saveRDS(
+    lasso.model,
+    here("sex_inference", "results", "lasso_model_sex.rds")
+)
 
-# Model accuracy
-mean(predicted.classes == y_test)
 
 predictive_genes <- coef(lasso.model) %>%
     as.matrix() %>%
     data.frame() %>%
-    filter(s0 > 0) %>%
+    filter(s0 != 0) %>%
+    arrange(s0) %>%
     rownames()
 
 
-2206.75-3*18-753.58
+# Make prediction on test data
+probabilities <- lasso.model %>% predict(
+    newx = x_test,
+    type = "response"
+)
+predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
+
+# Model accuracy
+mean(predicted.classes == y_test)
+```
+
+
+### Plot the prediction
+```{r}
+dds <- estimateSizeFactors(dds)
+plot_data_train <- t(log1p(counts(dds, normalize=TRUE)))[,predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata %>% select(sampleid=sampleID, sex), by = "sampleid")
+
+p <- ggplot(plot_data_train, aes(x = sex, y = norm_cnts)) +
+    ggbeeswarm::geom_quasirandom(width = 0.15, size = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "salmon",
+        width = 0.1,
+        aes(group = sex),
+        position = position_dodge(width = 0.5)
+    )
+
+ggsave(
+    plot=p,
+    filename = here("sex_inference", "results", "training_boxplots.png"),
+    width = 7,
+    height=5,
+    dpi=350,
+    scale=1.35
+)
 ```
 
 
 
-```{r}
-dds <- readRDS(here("QC", "results", "dds_final.rds"))
 
+### Run model on our data
+
+```{r}
+library(sva)
+dds <- readRDS(here("QC", "results", "dds_final.rds"))
 # order the genes like our training data
 dds <- dds[rownames(dds) %in% shared_genes, ]
 dds <- dds[match(shared_genes, rownames(dds)),]
 stopifnot(all(colnames(data) == rownames(dds)))
 
 norm_data <- assay(vst(dds, blind = TRUE))
-mod <- model.matrix(~ line + group, colData(dds))
-mod0 <- model.matrix(~line, colData(dds))
-svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
+
+# runs long, even with parallization
+# mod <- model.matrix(~ line + group + sex, colData(dds))
+# mod0 <- model.matrix(~ line + group, colData(dds))
+# svseq <- svaseq(norm_data, mod, mod0, n.sv = 5)
+# saveRDS(svseq, here("QC", "results", "sva_5_final_sex_compatibility.rds"))
+
+svseq <- readRDS(here("QC", "results", "sva_5_final_sex_compatibility.rds"))
 SVs <- svseq$sv
 colnames(SVs) <- paste0("SV", 1:5)
 mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
-
-
-# use limmas removeBatchEffects to emulate what the linear model will eventually do.
-mod <- model.matrix(~group, mdata)
+mod <- model.matrix(~sex, mdata)
 # Create the formula dynamically
 formula <- as.formula(paste("~", paste0("SV", 1:5, collapse = " + ")))
 mod0 <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
@@ -326,24 +410,45 @@ mod0 <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. Se
 # adjust the counts using limma
 adjusted_counts_our_data <- limma::removeBatchEffect(norm_data,
     batch = dds$line,
+    batch2 = dds$group,
     covariates = mod0,
     design = mod
 ) %>% t()
 
-t(adjusted_counts)[,predictive_genes] %>% summary()
-t(norm_data)[,predictive_genes] %>% summary()
+aggregated_data <- adjusted_counts_our_data %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata %>% select(sampleid, sex, line), by = "sampleid") %>%
+    group_by(line, gene) %>%
+    mutate(mean_expr = mean(norm_cnts)) %>%
+    ungroup()%>%
+    distinct(gene, line, mean_expr, .keep_all = TRUE)
+
+aggregated_data_wide <- aggregated_data %>%
+    select(sampleid, gene, mean_expr) %>%
+    pivot_wider(
+        names_from = gene,
+        values_from = mean_expr
+    ) %>%
+    column_to_rownames("sampleid")
+
+colnames(aggregated_data_wide) <- str_replace_all(colnames(aggregated_data_wide), "\\.", "-")
+
+aggregated_data_wide <- aggregated_data_wide[, match(shared_genes, colnames(data))]
 
 
-stopifnot(all(colnames(adjusted_counts_our_data) == colnames(data)))
+stopifnot(all(colnames(aggregated_data_wide) == colnames(data)))
 probabilities_our_data <- lasso.model %>% predict(
-    newx = adjusted_counts_our_data,
+    newx = as.matrix(aggregated_data_wide),
     type = "response"
 )
-predicted.classes <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
 
-all(mdata$sampleid == rownames(predicted.classes))
+our_predicted_class <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
 
-mdata$predicted_sex <- predicted.classes[,1]
+all(mdata$sampleid == rownames(our_predicted_class))
+
+mdata$predicted_sex <- our_predicted_class[,1]
 
 table(mdata$predicted_sex != mdata$sex)
 ```

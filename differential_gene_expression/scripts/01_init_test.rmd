@@ -21,7 +21,7 @@ editor_options:
 ```{r}
 library(DESeq2)
 library("BiocParallel")
-register(MulticoreParam(18))
+register(MulticoreParam(10))
 library(magrittr)
 library(PCAtools)
 library(tidyverse)
@@ -44,38 +44,44 @@ svseq <- readRDS(here("QC", "results", "sva_5_final.rds"))
 SVs <- svseq$sv
 colnames(SVs) <- paste0("SV", 1:5)
 mdata <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
-
-formula <- paste("~", paste0("SV", 1:5, collapse = " + "))
+mdata$line <- factor(mdata$line)
 dds <- DESeqDataSetFromMatrix(counts(dds),
     colData = mdata,
-    design = as.formula(paste(formula, "line + group", sep = "+"))
+    design = ~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + line + group
 )
 
-# runs very long... parallelization is necessary 
-deseq_res <- DESeq(dds, parallel = TRUE)
+
+
+# runs very long... 
+# using 18 cores this literally took ~6h
+# deseq_res <- DESeq(dds, parallel = TRUE)
+# saveRDS(deseq_res, here("differential_gene_expression", "results","init_results.rds"))
+deseq_res <- readRDS(here("differential_gene_expression", "results","init_results.rds"))
 resultsNames(deseq_res)
+plotDispEsts(deseq_res)
 
-
-design <- model.matrix(~ 0 + SV1 + SV2 + SV3 + SV4 + SV5 + SV6 + SV7 + SV8 + SV9 + SV10 +
-    SV11 + SV12 + SV13 + SV14 + SV15 + group, colData(dds))
-
+design = model.matrix(
+    as.formula(paste(formula, "line + group", sep = "+")),
+    colData(dds)
+)
 #colnames(design) <- str_remove_all(colnames(design), "group")
 contrasts <- limma::makeContrasts(
-    M0_comp = groupM0_oxLDL - groupM0_0,
-    M1_comp = groupM1_oxLDL - groupM1_0,
-    M2_comp = groupM2_oxLDL - groupM2_0,
-    M1vsM0_oxLDL = groupM1_oxLDL - groupM0_oxLDL, 
-    M2vsM0_oxLDL = groupM2_oxLDL - groupM0_oxLDL, 
-    M2vsM1_oxLDL = groupM2_oxLDL - groupM1_oxLDL, 
-    M1vsM0_ctrl = groupM1_0 - groupM0_0, 
-    M2vsM0_ctrl = groupM2_0 - groupM0_0, 
-    M2vsM1_ctrl = groupM2_0 - groupM1_0, 
-    treat_eff_M1_vs_M0 = (groupM1_oxLDL - groupM1_0) - (groupM0_oxLDL - groupM0_0),
-    treat_eff_M2_vs_M0 = (groupM2_oxLDL - groupM2_0) - (groupM0_oxLDL - groupM0_0),
-    treat_eff_M2_vs_M1 = (groupM2_oxLDL - groupM2_0) - (groupM1_oxLDL - groupM1_0),
-    stim_comp = (groupM0_oxLDL + groupM1_oxLDL + groupM2_oxLDL)/3 - (groupM0_0 + groupM1_0 + groupM2_0)/3,
+    M0_comp = groupM0_stim - groupM0_ctrl,
+    M1_comp = groupM1_stim - groupM1_ctrl,
+    M2_comp = groupM2_stim - groupM2_ctrl,
+    M1vsM0_stim = groupM1_stim - groupM0_stim, 
+    M2vsM0_stim = groupM2_stim - groupM0_stim, 
+    M2vsM1_stim = groupM2_stim - groupM1_stim, 
+    M1vsM0_ctrl = groupM1_ctrl - groupM0_ctrl, 
+    M2vsM0_ctrl = groupM2_ctrl - groupM0_ctrl, 
+    M2vsM1_ctrl = groupM2_ctrl - groupM1_ctrl, 
+    treat_eff_M1_vs_M0 = (groupM1_stim - groupM1_ctrl) - (groupM0_stim - groupM0_ctrl),
+    treat_eff_M2_vs_M0 = (groupM2_stim - groupM2_ctrl) - (groupM0_stim - groupM0_ctrl),
+    treat_eff_M2_vs_M1 = (groupM2_stim - groupM2_ctrl) - (groupM1_stim - groupM1_ctrl),
+    stim_comp = (groupM0_stim + groupM1_stim + groupM2_stim)/3 - (groupM0_ctrl + groupM1_ctrl + groupM2_ctrl)/3,
     levels = design
 )
+
 # should be 0 because 15 first rows are the surrogate variables.
 sum(contrasts[0:15, ]) == 0
 

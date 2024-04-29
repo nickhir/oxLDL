@@ -508,10 +508,16 @@ for (k in PC_pairings) {
     plots <- lapply(columns_to_plot, function(x) {
         expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
         expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+        if (x == "group") {
+            tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+        } else {
+            tmp_col = NA
+        }   
         p <- density_scatter(
             df = pca_plot_df,
             x_variable = str_interp("PC${k[1]}"),
             y_variable = str_interp("PC${k[2]}"),
+            colors = tmp_col,
             color_by = x,
             density_plot_ratio = 0.15,
             pt_size = 1.2,
@@ -543,11 +549,18 @@ for (k in PC_pairings) {
 ##############
 
 plots <- lapply(columns_to_plot, function(x) {
+    if (x == "group") {
+        tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+    } else {
+        tmp_col = NA
+    }
+    
     p <- density_scatter(
         df = umap_plot_df,
         x_variable = "UMAP1",
         y_variable = "UMAP2",
         color_by = x,
+        colors = tmp_col,
         density_plot_ratio = 0.15,
         pt_size = 1.2,
     )
@@ -567,6 +580,25 @@ ggsave(
     width = 18,
     height = 11.5,
 )
+
+
+# highlight batch 79704
+# ggplot(umap_plot_df, aes(UMAP1, UMAP2, color = group)) +
+#     geom_point() +
+#     geom_point(
+#         data = umap_plot_df %>% filter(batch1id == "79704"),
+#         aes(UMAP1, UMAP2), inherit.aes = FALSE, color = "black", show.legend = F,
+#         shape=21, stroke=1, size=2
+#     ) + 
+#     theme_Publication()+
+#     scale_color_manual(values=c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d"))
+
+
+
+
+
+
+
 
 ##############
 # TSNE PLOTS #
@@ -600,7 +632,6 @@ ggsave(
 ```
 
 ### Create PC and UMAP plot per batch
-
 ```{r calculate SVs}
 batchwise_plots <- parallel::mclapply(droplevels(sort(unique(dds$batch1id))), function(batch) {
     dds_subset <- dds[, dds$batch1id == batch]
