@@ -247,14 +247,14 @@ density_scatter <- function(
     xlim.update <- layer_scales(pmain)$x$get_limits()
     ylim.update <- layer_scales(pmain)$y$get_limits()
 
-    ptop <- ggplot(data = df, aes(x = !!sym(x_variable), fill = !!sym(color_by), y=..scaled..)) +
+    ptop <- ggplot(data = df, aes(x = !!sym(x_variable), fill = !!sym(color_by), y=after_stat(scaled))) +
         geom_density(linewidth = linewidth, alpha = alpha) +
         theme_void() %+%
         theme(legend.position = "none") +
         scale_x_continuous(limits = xlim.update) +
         scale_fill_manual(values = colors)
 
-    pright <- ggplot(data = df, aes(x = !!sym(y_variable), fill = !!sym(color_by), y=..scaled..)) +
+    pright <- ggplot(data = df, aes(x = !!sym(y_variable), fill = !!sym(color_by), y=after_stat(scaled))) +
         geom_density(linewidth = linewidth, alpha = alpha) +
         coord_flip() +
         theme_void() %+%

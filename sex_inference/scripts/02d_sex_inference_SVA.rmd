@@ -1,0 +1,627 @@
+---
+title: "Try sex inference"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+```{r, load libraries}
+library(glmnet)
+library(DESeq2)
+library(tidyverse)
+library(data.table)
+library(caret)
+library(glmnet)
+library(here)
+library(httpgd)
+library(patchwork)
+library(sva)
+
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **Introduction**
+We have downloaded the whole ARCH4S dataset. Using a python script (extract_mdata.ipynb) we have extracted
+all samples in that dataset that come from macrophage and that have sex information available. 
+Note: We have changed from macrophages to whole blood. Reason for this is that some "macrophage" datasets are 
+acutally just using whole blood when you look them up...
+
+Here, we will fit the lasso regression to predict sex.
+
+
+```{r}
+# load in mdata
+mdata <- fread(here("sex_inference", "results", "mdata_whole_blood.tsv"))
+mdata$sex <- ifelse(mdata$sex == "F", "FEMALE", "MALE")
+mdata <- mdata %>% na.omit()
+
+# only keep series ids that have used both males and females
+keep_ids <- mdata %>%
+    group_by(series_id, sex) %>%
+    tally() %>%
+    ungroup() %>%
+    group_by(series_id) %>%
+    tally() %>%
+    filter(n == 2) %>%
+    pull(series_id)
+
+mdata <- mdata %>%
+    filter(series_id %in% keep_ids)
+
+# load in count data
+raw_data <- fread(here("sex_inference", "results", "counts_whole_blood.tsv.gz")) 
+
+# only keep samples that pass mdata filter
+raw_data <- data.frame(raw_data)[, c("gene", mdata$sampleID)]
+
+# read in our data so we know which genes are "available"
+our_dds <- readRDS(here("QC", "results", "dds_final.rds"))
+
+# figure out which genes are shared between the datasets
+shared_genes <- intersect(rownames(our_dds), raw_data$gene)
+
+
+
+raw_data <- raw_data %>%
+    filter(gene %in% shared_genes)
+
+# some genes occure multiple times... no idea why.
+# we will just sum them together if this happens
+raw_data <- raw_data %>%
+    group_by(gene) %>%
+    summarise(across(everything(), sum)) %>%
+    column_to_rownames("gene") 
+
+# reorder the gene names
+raw_data <- raw_data[match(shared_genes, rownames(raw_data)), ]
+
+# create a deseq2 object for easy handling manipulation of the data
+dds <- DESeqDataSetFromMatrix(
+    countData = raw_data,
+    colData = mdata %>% column_to_rownames("sampleID"),
+    design = ~1
+)
+dds <- estimateSizeFactors(dds)
+
+# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3885686/ following publication says that vst actually performs worse 
+# compared to normal log for lasso regression. 
+# we also observed that sometimes vst seemed to transform a bimodel distribution into a trimodal one
+norm_data <- log1p(counts(dds, normalize = T))
+```
+
+
+### Some visualizations
+```{r, eval=FALSE}
+#################
+# CALCULATE PCA #
+#################
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sampleID") %>%
+    left_join(., mdata, by = c("sampleID" = "sampleID"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap::umap(t(norm_data))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleID") %>% 
+    left_join(., mdata)
+
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+pca_plot <- density_scatter(
+    df = pca_plot_df,
+    x_variable = "PC1",
+    y_variable = "PC2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+ggsave(
+    plot=pca_plot,
+    filename = here("sex_inference", "results", "PCA_unadjusted.png"),
+    dpi=400,
+    height=10,
+    width=12
+)
+
+
+umap_plot <- density_scatter(
+    df = umap_plot_df,
+    x_variable = "UMAP1",
+    y_variable = "UMAP2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+)
+
+
+```
+
+
+### Adjust counts
+```{r}
+# to keep things as similar as possible we will use sva to adjust batch effect.
+# probably better to just regress out the effect of the different series, but we want to process both
+# the training and test data (i.e. our expression data) as similar as possible
+mod <- model.matrix(~sex, colData(dds))
+mod0 <- model.matrix(~1, colData(dds))
+# svseq <- svaseq(norm_data, mod, mod0, n.sv = 10)
+# saveRDS(svseq, here("sex_inference", "results", "sva_10_training_data.rds"))
+svseq <- readRDS(here("sex_inference", "results", "sva_10_training_data.rds"))
+SVs <- svseq$sv %>% magrittr::set_colnames(paste0("SV", 1:10))
+mdata <- cbind(mdata %>% select(-contains("SV")), SVs)
+formula <- as.formula(paste("~", paste0("SV", 1:10, collapse = " + ")))
+cov_mod <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See t
+
+# adjust counts using limma
+adjusted_counts <- limma::removeBatchEffect(
+    norm_data,
+    covariates = cov_mod,
+    design = mod
+)
+
+# recalculate PCA with adjusted counts
+pca_data_corrected <- PCAtools::pca(
+    adjusted_counts,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+
+pca_plot_df <- pca_data_corrected$rotated[, 1:20] %>%
+    rownames_to_column("sampleID") %>%
+    left_join(., mdata, by = c("sampleID" = "sampleID"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data_corrected$variance[i]
+}
+
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data_corrected <- umap::umap(t(adjusted_counts))
+umap_plot_df <- umap_data_corrected$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleID") %>% 
+    left_join(., mdata)
+
+i = c(1, 2)
+expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+
+pca_plot_corrected <- density_scatter(
+    df = pca_plot_df,
+    x_variable = "PC1",
+    y_variable = "PC2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+    xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+    ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+)
+
+umap_plot_corrected <- density_scatter(
+    df = umap_plot_df,
+    x_variable = "UMAP1",
+    y_variable = "UMAP2",
+    color_by = "series_id",
+    density_plot_ratio = 0.15,
+    pt_size = 1.2,
+)
+
+ggsave(
+    plot = pca_plot_corrected,
+    filename = here("sex_inference", "results", "PCA_corrected_SV10.png"),
+    dpi = 400,
+    height = 10,
+    width = 12
+)
+
+```
+
+
+
+### Fit the model
+
+```{r}
+# Split the data into training and test set
+set.seed(50)
+training_samples <- mdata$sex %>% 
+  createDataPartition(p = 0.85, list = FALSE)
+train_data  <- t(adjusted_counts)[training_samples, ]
+test_data <- t(adjusted_counts)[-training_samples, ]
+train_mdata <- mdata[training_samples, ]
+test_mdata <- mdata[-training_samples, ]
+
+# Prepare the matrices for glmnet
+x_train <- as.matrix(train_data)
+y_train <- train_mdata$sex
+
+x_test <-  as.matrix(test_data)
+y_test <- test_mdata$sex
+
+# Fit logistic regression using cross validation
+cv_fit <- cv.glmnet(x_train, y_train,
+    family = "binomial",
+    type.measure = "class",
+    n.folds = 10,
+    alpha = 1 # 1 corresponds to lasso regression
+)
+plot(cv_fit)
+
+
+# Best lambda
+best_lambda <- cv_fit$lambda.min
+# print(best_lambda)
+
+
+# Final model with lambda.min
+# this uses all of the train data
+# the cv model above just the best fold, i.e. misses 1/10 of the data
+lasso.model <- glmnet(x_train, y_train,
+    alpha = 1, 
+    family = "binomial",
+    lambda = best_lambda
+)
+
+# saveRDS(
+#     lasso.model,
+#     here("sex_inference", "results", "lasso_model_sex.rds")
+# )
+
+predictive_genes <- coef(lasso.model) %>%
+    as.matrix() %>%
+    data.frame() %>%
+    filter(s0 != 0) %>%
+    arrange(s0) %>%
+    rownames()
+
+
+# Make prediction on test data
+probabilities <- lasso.model %>% predict(
+    newx = x_test,
+    type = "response"
+)
+predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
+
+# Model accuracy
+mean(predicted.classes == y_test)
+```
+
+
+### Fit the model with scaleing
+```{r}
+# Split the data into training and test set
+set.seed(50)
+training_samples <- mdata$sex %>% 
+  createDataPartition(p = 0.85, list = FALSE)
+train_data  <- t(adjusted_counts)[training_samples, ]
+test_data <- t(adjusted_counts)[-training_samples, ]
+train_mdata <- mdata[training_samples, ]
+test_mdata <- mdata[-training_samples, ]
+
+# Prepare the matrices for glmnet
+# try out scaleing
+preProcValues <- preProcess(train_data, method= c("center", "scale"))
+trainTransformed <- predict(preProcValues, train_data)
+testTransformed <- predict(preProcValues, test_data)
+
+y_train <- train_mdata$sex
+y_test <- test_mdata$sex
+
+# Fit logistic regression using cross validation
+cv_fit <- cv.glmnet(trainTransformed, y_train,
+    family = "binomial",
+    type.measure = "class",
+    n.folds = 10,
+    alpha = 1 # 1 corresponds to lasso regression
+)
+plot(cv_fit)
+
+
+# Best lambda
+best_lambda <- cv_fit$lambda.min
+# print(best_lambda)
+
+
+# Final model with lambda.min
+# this uses all of the train data
+# the cv model above just the best fold, i.e. misses 1/10 of the data
+lasso.model <- glmnet(x_train, y_train,
+    alpha = 1, 
+    family = "binomial",
+    lambda = best_lambda
+)
+
+# saveRDS(
+#     lasso.model,
+#     here("sex_inference", "results", "lasso_model_sex_with_scaling.rds")
+# )
+
+predictive_genes <- coef(lasso.model) %>%
+    as.matrix() %>%
+    data.frame() %>%
+    filter(s0 != 0) %>%
+    arrange(s0) %>%
+    rownames()
+
+
+# Make prediction on test data
+probabilities <- lasso.model %>% predict(
+    newx = testTransformed,
+    type = "response"
+)
+
+predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
+
+# Model accuracy
+mean(predicted.classes == y_test)
+```
+
+
+### Plot the prediction
+```{r}
+dds <- estimateSizeFactors(dds)
+
+# plot_data_train <- t(log1p(counts(dds, normalize=TRUE)))[,predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+#     data.frame() %>%
+#     rownames_to_column("sampleid") %>%
+#     pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+#     left_join(., mdata %>% select(sampleid=sampleID, sex), by = "sampleid")
+
+plot_data_train <- train_data[, predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata %>% select(sampleid = sampleID, sex), by = "sampleid")
+
+p <- ggplot(plot_data_train, aes(x = sex, y = norm_cnts)) +
+    ggbeeswarm::geom_quasirandom(width = 0.15, size = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "salmon",
+        width = 0.1,
+        aes(group = sex),
+        position = position_dodge(width = 0.5)
+    )
+
+ggsave(
+    plot=p,
+    filename = here("sex_inference", "results", "training_boxplots.png"),
+    width = 7,
+    height=5,
+    dpi=350,
+    scale=1.35
+)
+```
+
+
+### Run model on our data
+
+```{r}
+dds_our <- readRDS(here("QC", "results", "dds_final.rds"))
+# order the genes like our training data
+dds_our <- dds_our[rownames(dds_our) %in% shared_genes, ]
+dds_our <- dds_our[match(shared_genes, rownames(dds_our)),]
+stopifnot(all(colnames(t(adjusted_counts)) == rownames(dds_our)))
+
+# do the same preprocessing as the training data
+norm_data_our <- log1p(counts(dds_our, normalize=T))
+
+mod <- model.matrix(~sex, colData(dds_our))
+mod0 <- model.matrix(~ 1, colData(dds_our))
+# svseq <- svaseq(norm_data_our, mod, mod0, n.sv = 10)
+# saveRDS(svseq, here("sex_inference", "results", "sva_10_our_data.rds"))
+svseq <- readRDS(here("sex_inference", "results", "sva_10_our_data.rds"))
+SVs <- svseq$sv %>% magrittr::set_colnames(paste0("SV", 1:10))
+mdata_our <- cbind(colData(dds_our) %>% data.frame() %>% select(-contains("SV")), SVs)
+# Create the formula dynamically
+formula <- as.formula(paste("~", paste0("SV", 1:10, collapse = " + ")))
+cov_mod <- model.matrix(formula, mdata_our)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+# adjust the counts using limma
+adjusted_counts_our_data <- limma::removeBatchEffect(norm_data_our,
+    covariates = cov_mod,
+    design = mod
+)
+
+
+
+stopifnot(all(rownames(adjusted_counts_our_data) == rownames(adjusted_counts)))
+probabilities_our_data <- lasso.model %>% predict(
+    newx = t(adjusted_counts_our_data),
+    type = "response"
+)
+our_predicted_class <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
+
+all(mdata_our$sampleid == rownames(our_predicted_class))
+
+mdata_our$predicted_sex <- our_predicted_class[,1]
+
+table(mdata_our$predicted_sex != mdata_our$sex)
+
+
+plot_density(probabilities_our_data[,1])
+
+
+
+
+
+```
+
+
+### Compare the input distributions
+```{r}
+# Function to generate a density plot
+plot_density <- function(data_vector) {
+  # Ensure the input is a numeric vector
+  if (!is.numeric(data_vector)) {
+    stop("Input must be a numeric vector.")
+  }
+  
+  # Create the ggplot density plot
+  plot <- ggplot(data = data.frame(x = data_vector), aes(x = x, y=after_stat(scaled))) +
+    geom_density(fill = "blue", alpha = 0.5) + # You can change the color and transparency
+    labs(title = "Density Plot", x = "Data", y = "Density") +
+    theme_Publication()
+  
+  # Print the plot
+  plot
+}
+
+plot_density_together <- function(train, test) {
+    df <- data.frame(data = c(train, test), label = c(rep("Train", length(train)), rep("Our", length(test))))
+    plot <- ggplot(data = df, aes(x = data, y = after_stat(scaled), fill=label)) +
+        geom_density(alpha = 0.5) + # You can change the color and transparency
+        labs(title = "Density Plot", x = "Data", y = "Density") +
+        theme_Publication()
+
+    # Print the plot
+    plot
+}
+
+plot_cnt_distr <- function(gene) {
+    # train data
+    p1 <- plot_density(log1p(counts(dds, normalize = T)[gene, ])) + ggtitle("Raw Counts")
+    p2 <- plot_density(norm_data[gene, ]) + ggtitle("Norm Counts")
+    p3 <- plot_density(adjusted_counts[gene, ]) + ggtitle("Adjusted Counts")
+
+    # our data
+    p4 <- plot_density(log1p(counts(dds_our, normalize = T)[gene, ])) + ggtitle("Raw Counts Our")
+    p5 <- plot_density(norm_data_our[gene, ]) + ggtitle("Norm Counts Our")
+    p6 <- plot_density(adjusted_counts_our_data[gene, ]) + ggtitle("Adjusted Counts Our")
+
+    wrap_plots(p1, p2, p3, p4, p5, p6, ncol = 3) + plot_annotation(title = gene)
+}
+
+plot_cnt_distr_together <- function(gene, scale=F) {
+    if (scale) {
+        p1 <- plot_density_together(
+            scale(log1p(counts(dds, normalize = T)[gene, ]))[,1],
+            scale(log1p(counts(dds_our, normalize = T)[gene, ]))[,1]
+        ) + ggtitle("Raw Counts")
+
+        p2 <- plot_density_together(
+            scale(norm_data[gene, ])[, 1],
+            scale(norm_data_our[gene, ])[,1]
+        ) + ggtitle("VST Normalization")
+
+        p3 <- plot_density_together(
+            scale(adjusted_counts[gene, ])[, 1],
+            scale(adjusted_counts_our_data[gene, ])[, 1]
+        ) + ggtitle("Adjusted Data")
+        return(wrap_plots(p1, p2, p3, ncol = 3) + plot_annotation(title = gene))
+    }
+    p1 <- plot_density_together(
+        log1p(counts(dds, normalize = T)[gene, ]),
+        log1p(counts(dds_our, normalize = T)[gene, ])
+    ) + ggtitle("Raw Counts")
+
+    p2 <- plot_density_together(
+        norm_data[gene, ],
+        norm_data_our[gene, ]
+    ) + ggtitle("VST Normalization")
+
+    p3 <- plot_density_together(
+        adjusted_counts[gene, ],
+        adjusted_counts_our_data[gene, ]
+    ) + ggtitle("Adjusted Data")
+    return(wrap_plots(p1, p2, p3, ncol = 3) + plot_annotation(title = gene))
+}
+
+
+# some of the genes do not follow the same distribution in our test and prediction dataset.
+
+all_distr_together <- lapply(predictive_genes[-which(predictive_genes == "(Intercept)")], function(x){
+    plot_cnt_distr_together(x)
+})
+names(all_distr_together) <- predictive_genes[-which(predictive_genes == "(Intercept)")]
+all_distr_together
+
+
+
+all_distr_together_scale <- lapply(predictive_genes[-which(predictive_genes == "(Intercept)")], function(x){
+    plot_cnt_distr_together(x, scale=T)
+})
+names(all_distr_together_scale) <- predictive_genes[-which(predictive_genes == "(Intercept)")]
+all_distr_together_scale
+
+
+
+
+```
+
+
+
+```{r}
+# for each celline, calculate the average expression of these genes for all conditions
+plot_data <- t(log1p(counts(dds, normalize=TRUE)))[,predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+    t() %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata %>% select(sampleid, line, sex, predicted_sex), by = "sampleid") %>%
+    group_by(line, gene) %>%
+    mutate(mean_expr = mean(norm_cnts)) %>%
+    ungroup() %>%
+    distinct(gene, line, mean_expr, .keep_all = TRUE)
+
+plot_data$mismatch <- ifelse(plot_data$sex != plot_data$predicted_sex, "mismatch", "match")
+
+ggplot(plot_data, aes(x = sex, y = mean_expr, color = mismatch)) +
+    geom_jitter(width = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "darkgreen",
+        width = 0.05,
+        aes(group = sex),
+        position = position_dodge(width = 0.5)
+    ) +
+    scale_color_manual(values = c("black", "red")) +
+    theme(legend.position = "none")
+
+```

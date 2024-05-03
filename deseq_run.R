@@ -1,6 +1,6 @@
 library(DESeq2)
 library("BiocParallel")
-register(MulticoreParam(10))
+register(MulticoreParam(20))
 library(magrittr)
 library(PCAtools)
 library(tidyverse)

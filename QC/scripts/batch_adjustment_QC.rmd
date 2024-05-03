@@ -1,0 +1,361 @@
+---
+title: "RNA seq batch correction"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+```{r, load libraries}
+library(DESeq2)
+library(ComplexHeatmap)
+library(RColorBrewer)
+library(circlize)
+library(magrittr)
+library(PCAtools)
+library(umap)
+library(patchwork)
+library(sva)
+library(httpgd)
+library(tidyverse)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **Introduction**
+For the eQTL mapping, we currently follow the very simple PCA adjustment approach (regress out different number of PCs and ultimately pick the configuration that results in the most eQTLs).
+If number is too high, you are also regressing out genotype effects and it will fall. 
+
+Here I want to do 2 things:
+1) Check how our data looks like if we also do the PCA approach. 
+2) Do a 2 Stage SVA approach like they did in Oli Stegles [peer paper](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2865505/). 
+
+First regress out known covars, then run SVA on the rest. Results should match the "one step" approach that I am currently using. 
+
+
+
+### Use PCA regression
+
+```{r}
+dds <- readRDS(here("QC", "results", "dds_final.rds"))
+mdata <- colData(dds) %>% data.frame()
+norm_data <- assay(vst(dds, blind = TRUE))
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds),
+    removeVar = 0.4
+)
+
+pca_plot_df <- pca_data$rotated[, 1:50] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:50) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+```
+
+
+```{r}
+# Plot the resulting PCA after regressing PC1 to PC50.
+# Each pdf page should be one plot.
+
+# can be done in parallel. Writing to disk/plotting not.
+PCA_plots <- pbmcapply::pbmclapply(1:50, function(i) {
+    print(i)
+    mod <- model.matrix(~group, mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("PC", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, pca_plot_df)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+    pca_plot_df <- pca_data$rotated[, 1:20] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid"))
+    for (z in 1:20) {
+        pca_plot_df[, str_interp("PC${z}_explained_var")] <- pca_data$variance[z]
+    }
+
+    umap_data <- umap::umap(t(adjusted_counts))
+    umap_plot_df <- umap_data$layout %>%
+        data.frame() %>%
+        magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+        rownames_to_column("sampleid") %>%
+        left_join(., mdata)
+
+
+    columns_to_plot <- c(
+        "state", "condition", "group",
+        "ethnicity", "age", "batch1id"
+    )
+
+    #############
+    # PCA PLOTS #
+    #############
+    plots <- lapply(columns_to_plot, function(x) {
+        k = c(1, 2)
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+        if (x == "group") {
+            tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+        } else {
+            tmp_col = NA
+        }
+        p <- density_scatter(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${k[1]}"),
+            y_variable = str_interp("PC${k[2]}"),
+            colors = tmp_col,
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+        )
+        p <- p +
+            plot_annotation(
+                title = str_interp("PC${i} regression - ${x}"),
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+
+    ##############
+    # UMAP PLOTS #
+    ##############
+    plots <- lapply(columns_to_plot, function(x) {
+        if (x == "group") {
+            tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+        } else {
+            tmp_col = NA
+        }
+        p <- density_scatter(
+            df = umap_plot_df,
+            x_variable = "UMAP1",
+            y_variable = "UMAP2",
+            colors = tmp_col,
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = "UMAP1",
+            ylab = "UMAP2"
+        )
+        p <- p +
+            plot_annotation(
+                title = str_interp("PC${i} regression - ${x}"),
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot_umap <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    return(list(
+        "pca_plot" = final_plot,
+        "umap_plot" = final_plot_umap
+    ))
+}, mc.cores = 20)
+
+pdf(here("QC", "results", "imgs", "PC_adjustment", "PCA_adjustment.pdf"), width = 18, height = 11.5)
+for (element in PCA_plots){
+    print(element[[1]])
+    print(element[[2]])
+}
+dev.off()
+```
+
+
+
+### Do the 2 step SVA regression
+```{r}
+# step one is to regress out known covars
+norm_data_adj <- limma::removeBatchEffect(norm_data,
+    batch = dds$line,
+    group = dds$group
+)
+
+
+# just 9 values, shouldnt be an issue.
+sum(norm_data_adj<0)
+norm_data_adj[norm_data_adj < 0] = 0
+
+# Now run the "default" sva on the residuals/adjusted expression
+mod <- model.matrix(~ group, colData(dds))
+mod0 <- model.matrix(~1, colData(dds))
+svseq_two_step <- svaseq(norm_data_adj, mod, mod0, n.sv = 5)
+
+# load our approach 
+svseq_one_step <- readRDS(here("QC", "results", "sva_5_final.rds"))
+
+# completely different. 
+cor(svseq_two_step$sv[, 1], svseq_one_step$sv[, 1])
+
+
+
+
+
+
+
+
+
+
+
+
+
+###########
+# HEATMAP #
+###########
+SVs <- svseq_two_step$sv %>% magrittr::set_colnames(paste0("SV", 1:5))
+mdata_two_step <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+
+covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize", "line")
+correlation_SVs <- covar_correlation(
+    df = mdata_two_step,
+    covars = covar_list,
+    components = paste0("SV", 1:5)
+)
+
+correlation_SVs$heatmap
+
+adjusted_two_step <- limma::removeBatchEffect(
+    norm_data,
+    batch = mdata_two_step$line,
+    covariates = model.matrix(~SV1+SV2+SV3+SV4+SV5, mdata_two_step)[,-1],
+    group = mdata_two_step$group
+)
+
+# recalculate PCA with adjusted counts
+pca_data <- PCAtools::pca(adjusted_two_step,
+    metadata = mdata_two_step,
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (k in 1:20) {
+    pca_plot_df[, str_interp("PC${k}_explained_var")] <- pca_data$variance[k]
+}
+k = c(1, 2)
+columns_to_plot <- c("state", "condition", "group", "ethnicity", "age", "batch1id")
+plots <- lapply(columns_to_plot, function(x) {
+    expl_var1 <- round(pca_plot_df[1, str_interp("PC${k[1]}_explained_var")], 2)
+    expl_var2 <- round(pca_plot_df[1, str_interp("PC${k[2]}_explained_var")], 2)
+    if (x == "group") {
+        tmp_col = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d")
+    } else {
+        tmp_col = NA
+    }   
+    p <- density_scatter(
+        df = pca_plot_df,
+        x_variable = str_interp("PC${k[1]}"),
+        y_variable = str_interp("PC${k[2]}"),
+        colors = tmp_col,
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+        xlab = str_interp("PC${k[1]}: ${expl_var1}% variance"),
+        ylab = str_interp("PC${k[2]}: ${expl_var2}% variance")
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+
+# this looks actually very similar to the plot using our approach
+final_plot
+
+
+# I think that our SV association plot also makes sense actually. 
+# We have regressed out effects of sex, ethnicity, age, batch and so on by regressing line
+# consequently the SVs CANT pick this up. Instead they are picking stuff up which is not in our meta data.
+# in that way, it is actually a positive control that we dont observe correlations. 
+SVs <- svseq_one_step$sv %>% magrittr::set_colnames(paste0("SV", 1:5))
+mdata_one_step <- cbind(colData(dds) %>% data.frame() %>% select(-contains("SV")), SVs)
+
+
+covar_list = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize", "line")
+correlation_SVs <- covar_correlation(
+    df = mdata_one_step,
+    covars = covar_list,
+    components = paste0("SV", 1:5)
+)
+correlation_SVs$heatmap
+
+
+
+```
+
+
+
+### Quick check of the used genes
+
+```{r}
+# I noticed a lot of pseudo genes, see if this is actually the case
+library(biomaRt)
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+attributes <- c("external_gene_name", "gene_biotype")
+biomart_results <- getBM(attributes = attributes,
+                 filters = "external_gene_name",
+                 values = rownames(norm_data),
+                 mart = ensembl)
+
+dim(norm_data)
+dim(biomart_results)
+head(biomart_results)
+
+biomart_results$gene_biotype %>% table() %>% sort()
+
+# genes which are protein coding or annotated lncRNA:
+13908+1043
+
+# 3k genes are pseudogenes and the like... check the actual input data of the pipeline why there are so many
+nrow(norm_data)
+
+rownames(norm_data)[!rownames(norm_data) %in% biomart_results$external_gene_name]
+
+
+
+```
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+

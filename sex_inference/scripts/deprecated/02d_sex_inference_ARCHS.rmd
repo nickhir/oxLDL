@@ -50,7 +50,7 @@ Here, we will fit the lasso regression to predict sex.
 
 ```{r define functions}
 inverse_rank_norm <- function(x) {
-    qnorm((rank(x, na.last = "keep") - 0.5) / sum(!is.na(x)))
+    qnorm((rank(x, na.last = "keep", ties.method="random") - 0.5) / sum(!is.na(x)))
 }
 ```
 
@@ -73,7 +73,6 @@ keep_ids <- mdata %>%
 
 mdata <- mdata %>%
     filter(series_id %in% keep_ids)
-
 
 # load in count data
 data <- fread(here("sex_inference", "results", "counts_whole_blood.tsv.gz")) 
@@ -415,35 +414,13 @@ adjusted_counts_our_data <- limma::removeBatchEffect(norm_data,
     design = mod
 ) %>% t()
 
-aggregated_data <- adjusted_counts_our_data %>%
-    data.frame() %>%
-    rownames_to_column("sampleid") %>%
-    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
-    left_join(., mdata %>% select(sampleid, sex, line), by = "sampleid") %>%
-    group_by(line, gene) %>%
-    mutate(mean_expr = mean(norm_cnts)) %>%
-    ungroup()%>%
-    distinct(gene, line, mean_expr, .keep_all = TRUE)
-
-aggregated_data_wide <- aggregated_data %>%
-    select(sampleid, gene, mean_expr) %>%
-    pivot_wider(
-        names_from = gene,
-        values_from = mean_expr
-    ) %>%
-    column_to_rownames("sampleid")
-
-colnames(aggregated_data_wide) <- str_replace_all(colnames(aggregated_data_wide), "\\.", "-")
-
-aggregated_data_wide <- aggregated_data_wide[, match(shared_genes, colnames(data))]
 
 
-stopifnot(all(colnames(aggregated_data_wide) == colnames(data)))
+stopifnot(all(colnames(adjusted_counts_our_data) == colnames(data)))
 probabilities_our_data <- lasso.model %>% predict(
-    newx = as.matrix(aggregated_data_wide),
+    newx = adjusted_counts_our_data,
     type = "response"
 )
-
 our_predicted_class <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
 
 all(mdata$sampleid == rownames(our_predicted_class))
@@ -454,9 +431,33 @@ table(mdata$predicted_sex != mdata$sex)
 ```
 
 ```{r}
-dds
-n_distinct(colData(dds)$line)
+# for each celline, calculate the average expression of these genes for all conditions
+plot_data <- t(log1p(counts(dds, normalize=TRUE)))[,predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+    t() %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata %>% select(sampleid, line, sex, predicted_sex), by = "sampleid") %>%
+    group_by(line, gene) %>%
+    mutate(mean_expr = mean(norm_cnts)) %>%
+    ungroup() %>%
+    distinct(gene, line, mean_expr, .keep_all = TRUE)
 
-table(dds$oxldlset) %>% sort()
+plot_data$mismatch <- ifelse(plot_data$sex != plot_data$predicted_sex, "mismatch", "match")
+
+ggplot(plot_data, aes(x = sex, y = mean_expr, color = mismatch)) +
+    geom_jitter(width = 0.1) +
+    facet_wrap(~gene, scales = "free_y") +
+    theme_Publication() +
+    stat_summary(
+        fun = "mean",
+        geom = "crossbar",
+        color = "darkgreen",
+        width = 0.05,
+        aes(group = sex),
+        position = position_dodge(width = 0.5)
+    ) +
+    scale_color_manual(values = c("black", "red")) +
+    theme(legend.position = "none")
 
 ```

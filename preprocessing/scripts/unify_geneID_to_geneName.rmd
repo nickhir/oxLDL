@@ -34,6 +34,12 @@ In this script we will make sure that the mapping is 1 to 1.
 library(tidyverse)
 ```
 
+
+See nf-core rna seq documentation:
+https://nf-co.re/rnaseq/3.10.1/docs/output#salmon -> salmon.merged.gene_counts_length_scaled use this directly as you would with a regular counts matrix.
+Also see comment from Mike love here: https://support.bioconductor.org/p/9149309/
+He recommends to use salmon.merged.gene_counts_length_scaled.tsv as the count matrix input.
+
 ```{r load the count table of interest}
 raw_counts <- data.table::fread(here("data", "oxLDL_data", "RNA_seq", "results", "star_salmon", "salmon.merged.gene_counts_length_scaled.tsv"),
     data.table = FALSE
