@@ -77,6 +77,7 @@ for (i in 1:50) {
 ```
 
 
+### Plot PDF
 ```{r}
 # Plot the resulting PCA after regressing PC1 to PC50.
 # Each pdf page should be one plot.
@@ -193,6 +194,250 @@ for (element in PCA_plots){
 dev.off()
 ```
 
+
+
+### Animate the PCA regression
+Here, we preserve differences in group, by first regressing it out and then essentially 
+running the PC regrssion on the resulting residuals. 
+```{r}
+library(gganimate)
+library(httpgd)
+# we have to create one big df that contains information about all PCs
+PCA_df_combined <- pbmcapply::pbmclapply(1:50, function(i) {
+    print(i)
+    mod <- model.matrix(~group, mdata)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("PC", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, pca_plot_df)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+        design = mod
+    )
+    # recalculate PCA with adjusted counts
+    pca_data_tmp <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+    pca_plot_df_tmp <- pca_data_tmp$rotated[, 1:2] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid")) %>%
+        select(sample_id, PC1, PC2, group)
+    for (z in 1:2) {
+        pca_plot_df_tmp[, str_interp("PC${z}_explained_var")] <- pca_data_tmp$variance[z]
+    }
+    pca_plot_df_tmp <- pca_plot_df_tmp %>% mutate(regressionPC = paste0(i))
+
+    # for the animation, it is easier, if the same clusters stay in the same corner.
+    # for example M1_ctrl should be top right and M2_stim bottom left.
+    # to ensure this, we can multiply PC1 or PC2 *-1 if necessary
+
+    # calculate centriod per group
+    centriods <- pca_plot_df_tmp %>%
+        group_by(group) %>%
+        summarise(
+            PC1_mean = mean(PC1),
+            PC2_mean = mean(PC2)
+        ) %>%
+        filter(group %in% c("M1_ctrl", "M2_stim")) %>% 
+        column_to_rownames("group")
+    
+    # if both centriods are positive for M1_ctrl and neg for M2_stim dont do anything
+    PC1_multiplier = 1
+    PC2_multiplier = 1
+    if (centriods["M1_ctrl", 1] < 0) {
+        PC1_multiplier = -1
+    }
+    if (centriods["M1_ctrl", 2] < 0) {
+        PC2_multiplier = -1
+    }
+    pca_plot_df_tmp$PC1 = pca_plot_df_tmp$PC1 * PC1_multiplier
+    pca_plot_df_tmp$PC2 = pca_plot_df_tmp$PC2 * PC2_multiplier
+
+    # recalculate centriods to see if it worked
+    centriods <- pca_plot_df_tmp %>%
+        group_by(group) %>%
+        summarise(
+            PC1_mean = mean(PC1),
+            PC2_mean = mean(PC2)
+        ) %>%
+        filter(group %in% c("M1_ctrl", "M2_stim")) %>%
+        column_to_rownames("group")
+    
+    if(sum(sign(centriods)[1,]) != 2){
+        stop("centriods are wrong")
+    }
+    return(pca_plot_df_tmp)
+}, mc.cores = 25) %>%
+    bind_rows()
+
+PCA_df_combined$regressionPC <- factor(PCA_df_combined$regressionPC, levels=1:50)
+
+
+# the animations look nicer if we do not change axis constantly.
+# this means we make sure that all datapoints fall within -30 and 30
+dim(PCA_df_combined)
+PCA_df_combined <- PCA_df_combined %>%
+    filter(PC1 < 40) %>% 
+    filter(PC1 > -40) %>% 
+    filter(PC2 < 40) %>% 
+    filter(PC2 > -40) 
+dim(PCA_df_combined)
+
+p <- ggplot(PCA_df_combined, aes(x = PC1, y = PC2, color = group)) +
+    geom_point() +
+    theme_Publication() +
+    guides(color=guide_legend(nrow=2,byrow=TRUE))+
+    scale_color_manual(values = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d"))
+
+
+
+anim <- p +
+    transition_states(regressionPC,
+        transition_length = 13,
+        state_length = 20,
+        wrap = FALSE
+    ) +
+    labs(title = "Number of regressed PCs: {closest_state}")
+
+anim_save(here("QC", "results", "imgs", "PC_adjustment", "PC_adjusting_preserving_group.gif"),
+    animation = anim,
+    nframes = 1350,
+    fps = 25,
+    start_pause = 10,
+    end_pause = 30,
+    rewind = FALSE,
+)
+```
+
+
+Here, we do NOT preserve the differences
+```{r}
+# we have to create one big df that contains information about all PCs
+PCA_df_combined_no_preservation <- pbmcapply::pbmclapply(1:50, function(i) {
+    print(i)
+    # Create the formula dynamically
+    formula <- as.formula(paste("~", paste0("PC", 1:i, collapse = " + ")))
+    mod0 <- model.matrix(formula, pca_plot_df)[, -1] # this removes the intercept term. See this post: https://support.bioconductor.org/p/9144613/
+
+    # adjust the counts using limma
+    # we do not specify a design which means that biological differences wont be preserved.
+    adjusted_counts <- limma::removeBatchEffect(norm_data,
+        covariates = mod0,
+    )
+    # recalculate PCA with adjusted counts
+    pca_data_tmp <- PCAtools::pca(adjusted_counts,
+        metadata = colData(dds),
+        removeVar = 0.4
+    )
+    pca_plot_df_tmp <- pca_data_tmp$rotated[, 1:2] %>%
+        rownames_to_column("sample_id") %>%
+        left_join(., mdata, by = c("sample_id" = "sampleid")) %>%
+        select(sample_id, PC1, PC2, group)
+    for (z in 1:2) {
+        pca_plot_df_tmp[, str_interp("PC${z}_explained_var")] <- pca_data_tmp$variance[z]
+    }
+    pca_plot_df_tmp <- pca_plot_df_tmp %>% mutate(regressionPC = paste0(i))
+
+    # for the animation, it is easier, if the same clusters stay in the same corner.
+    # for example M1_ctrl should be top right and M2_stim bottom left.
+    # to ensure this, we can multiply PC1 or PC2 *-1 if necessary
+
+    # calculate centriod per group
+    centriods <- pca_plot_df_tmp %>%
+        group_by(group) %>%
+        summarise(
+            PC1_mean = mean(PC1),
+            PC2_mean = mean(PC2)
+        ) %>%
+        filter(group %in% c("M1_ctrl", "M2_stim")) %>% 
+        column_to_rownames("group")
+    
+    # if both centriods are positive for M1_ctrl and neg for M2_stim dont do anything
+    PC1_multiplier = 1
+    PC2_multiplier = 1
+    if (centriods["M1_ctrl", 1] < 0) {
+        PC1_multiplier = -1
+    }
+    if (centriods["M1_ctrl", 2] < 0) {
+        PC2_multiplier = -1
+    }
+    pca_plot_df_tmp$PC1 = pca_plot_df_tmp$PC1 * PC1_multiplier
+    pca_plot_df_tmp$PC2 = pca_plot_df_tmp$PC2 * PC2_multiplier
+
+    # recalculate centriods to see if it worked
+    centriods <- pca_plot_df_tmp %>%
+        group_by(group) %>%
+        summarise(
+            PC1_mean = mean(PC1),
+            PC2_mean = mean(PC2)
+        ) %>%
+        filter(group %in% c("M1_ctrl", "M2_stim")) %>%
+        column_to_rownames("group")
+    
+    if(sum(sign(centriods)[1,]) != 2){
+        stop("centriods are wrong")
+    }
+    return(pca_plot_df_tmp)
+}, mc.cores = 25) %>%
+    bind_rows()
+PCA_df_combined_no_preservation$regressionPC <- factor(PCA_df_combined_no_preservation$regressionPC, levels=1:50)
+
+
+# the animations look nicer if we do not change axis constantly.
+# this means we make sure that all datapoints fall within -30 and 30
+dim(PCA_df_combined_no_preservation)
+PCA_df_combined_no_preservation <- PCA_df_combined_no_preservation %>%
+    filter(PC1 < 40) %>% 
+    filter(PC1 > -40) %>% 
+    filter(PC2 < 40) %>% 
+    filter(PC2 > -40) 
+dim(PCA_df_combined_no_preservation)
+
+p <- ggplot(PCA_df_combined_no_preservation, aes(x = PC1, y = PC2, color = group)) +
+    geom_point() +
+    theme_Publication() +
+    guides(color=guide_legend(nrow=2,byrow=TRUE))+
+    scale_color_manual(values = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d"))
+
+
+PC1_expl_var <- unique(PCA_df_combined_no_preservation$PC1_explained_var)
+PC2_expl_var <- unique(PCA_df_combined_no_preservation$PC2_explained_var)
+anim <- p +
+    transition_states(regressionPC,
+        transition_length = 13,
+        state_length = 20,
+        wrap = FALSE
+    ) +
+    labs(
+        title = "Number of regressed PCs: {closest_state}",
+        xlab = paste0("PC1:",PC1_expl_var['{closest_state}']  ,"% explained variance"),
+        ylab = paste0("PC2:",PC2_expl_var['{closest_state}']  ,"% explained variance"),
+        )
+        
+anim_save(here("QC", "results", "imgs", "PC_adjustment", "PC_adjusting_no_preserving_group.gif"),
+    animation = anim,
+    nframes = 1350,
+    fps = 25,
+    start_pause = 10,
+    end_pause = 30,
+    rewind = FALSE,
+)
+
+
+
+# anim <- p +
+#     transition_states(regressionPC,
+#         transition_length = 300,
+#         state_length = 400,
+#         wrap = FALSE
+#     ) +
+#     labs(title = "Number of regressed PCs: {closest_state}")
+
+
+
+```
 
 
 ### Do the 2 step SVA regression
