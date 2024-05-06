@@ -53,8 +53,6 @@ Here I want to do 2 things:
 
 First regress out known covars, then run SVA on the rest. Results should match the "one step" approach that I am currently using. 
 
-
-
 ### Use PCA regression
 
 ```{r}
@@ -78,7 +76,7 @@ for (i in 1:50) {
 
 
 ### Plot PDF
-```{r}
+```{r, eval=FALSE}
 # Plot the resulting PCA after regressing PC1 to PC50.
 # Each pdf page should be one plot.
 
@@ -288,14 +286,34 @@ dim(PCA_df_combined)
 p <- ggplot(PCA_df_combined, aes(x = PC1, y = PC2, color = group)) +
     geom_point() +
     theme_Publication() +
-    guides(color=guide_legend(nrow=2,byrow=TRUE))+
+    coord_cartesian(ylim = c(-40, 40), xlim = c(-40, 40), clip = "off") + # NEW
+    geom_text(
+        x = -3,
+        y = -52.5,
+        aes(label = paste0("PC1: ", round(PC1_explained_var, 2), " % variance explained")),
+        show.legend = FALSE,
+        size = 5,
+        color = "black"
+    ) +
+    geom_text(
+        x = -52.5,
+        y = -3,
+        aes(label = paste0("PC2: ", round(PC2_explained_var, 2), " % variance explained")),
+        show.legend = FALSE,
+        size = 5,
+        angle = 90,
+        color = "black"
+    ) +
+    theme(plot.margin = margin(1, 1, 1, 1, "cm")) +
+    ylab("") +
+    xlab("")+
+    guides(color = guide_legend(nrow = 2, byrow = TRUE)) +
     scale_color_manual(values = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d"))
-
 
 
 anim <- p +
     transition_states(regressionPC,
-        transition_length = 13,
+        transition_length = 11,
         state_length = 20,
         wrap = FALSE
     ) +
@@ -308,6 +326,9 @@ anim_save(here("QC", "results", "imgs", "PC_adjustment", "PC_adjusting_preservin
     start_pause = 10,
     end_pause = 30,
     rewind = FALSE,
+    res=300,
+    height=1750,
+    width=1750
 )
 ```
 
@@ -398,24 +419,39 @@ dim(PCA_df_combined_no_preservation)
 p <- ggplot(PCA_df_combined_no_preservation, aes(x = PC1, y = PC2, color = group)) +
     geom_point() +
     theme_Publication() +
-    guides(color=guide_legend(nrow=2,byrow=TRUE))+
+    coord_cartesian(ylim = c(-40, 40), xlim = c(-40, 40), clip = "off") + # NEW
+    geom_text(
+        x = -3,
+        y = -52.5,
+        aes(label = paste0("PC1: ", round(PC1_explained_var, 2), " % variance explained")),
+        show.legend = FALSE,
+        size = 5,
+        color = "black"
+    ) +
+    geom_text(
+        x = -52.5,
+        y = -3,
+        aes(label = paste0("PC2: ", round(PC2_explained_var, 2), " % variance explained")),
+        show.legend = FALSE,
+        size = 5,
+        angle = 90,
+        color = "black"
+    ) +
+    theme(plot.margin = margin(1, 1, 1, 1, "cm")) +
+    ylab("") +
+    xlab("")+
+    guides(color = guide_legend(nrow = 2, byrow = TRUE)) +
     scale_color_manual(values = c("#fb867d", "#86f88f", "#7a8ff4", "#FA392A", "#0AB517", "#0b218d"))
 
-
-PC1_expl_var <- unique(PCA_df_combined_no_preservation$PC1_explained_var)
-PC2_expl_var <- unique(PCA_df_combined_no_preservation$PC2_explained_var)
 anim <- p +
     transition_states(regressionPC,
-        transition_length = 13,
+        transition_length = 11,
         state_length = 20,
         wrap = FALSE
     ) +
-    labs(
-        title = "Number of regressed PCs: {closest_state}",
-        xlab = paste0("PC1:",PC1_expl_var['{closest_state}']  ,"% explained variance"),
-        ylab = paste0("PC2:",PC2_expl_var['{closest_state}']  ,"% explained variance"),
-        )
+    labs(title = "Number of regressed PCs: {closest_state}")
         
+
 anim_save(here("QC", "results", "imgs", "PC_adjustment", "PC_adjusting_no_preserving_group.gif"),
     animation = anim,
     nframes = 1350,
@@ -423,20 +459,10 @@ anim_save(here("QC", "results", "imgs", "PC_adjustment", "PC_adjusting_no_preser
     start_pause = 10,
     end_pause = 30,
     rewind = FALSE,
+    res=300,
+    height=1750,
+    width=1750
 )
-
-
-
-# anim <- p +
-#     transition_states(regressionPC,
-#         transition_length = 300,
-#         state_length = 400,
-#         wrap = FALSE
-#     ) +
-#     labs(title = "Number of regressed PCs: {closest_state}")
-
-
-
 ```
 
 
@@ -591,9 +617,6 @@ biomart_results$gene_biotype %>% table() %>% sort()
 nrow(norm_data)
 
 rownames(norm_data)[!rownames(norm_data) %in% biomart_results$external_gene_name]
-
-
-
 ```
 
 ```{r}

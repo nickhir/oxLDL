@@ -1,0 +1,159 @@
+---
+title: "Showcasce what batch correction actually does" 
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 350
+)
+```
+
+```{r}
+# Load necessary library
+if (!requireNamespace("limma", quietly = TRUE)) {
+    install.packages("BiocManager")
+    BiocManager::install("limma")
+    library(limma)
+} else {
+    library(limma)
+}
+```
+
+
+### Batch correction while preserving a biological effect
+
+```{r}
+
+# Parameters
+num_genes <- 100
+num_samples <- 12
+
+# Simulate some data: 100 genes and 12 samples
+# Base expression levels
+base_expression <- matrix(rnorm(num_genes * num_samples, mean = 10, sd = 3), nrow = num_genes, ncol = num_samples)
+rownames(base_expression) <- paste("Gene", 1:num_genes)
+colnames(base_expression) <- paste("Sample", 1:num_samples)
+
+# Create batch factors
+batch <- factor(rep(c("Batch1", "Batch2", "Batch3"), 4))
+
+# Create a biological factor (treatment)
+treatment <- factor(rep(c("Control", "Treatment"), 6))
+
+# Apply consistent batch effects
+batch_effects <- c(5, -4, 9) # Different consistent effects for each batch
+batch_matrix <- matrix(batch_effects[as.integer(batch)], nrow = num_genes, ncol = num_samples, byrow = TRUE)
+
+# Apply consistent treatment effects
+treatment_effects <- c(0, 15) # No effect for control, positive effect for treatment
+treatment_matrix <- matrix(treatment_effects[as.integer(treatment)], nrow = num_genes, ncol = num_samples, byrow = TRUE)
+
+expression <- base_expression + batch_matrix + treatment_matrix
+
+# Manual adjustment using lm() preserving biological condition
+adjusted_expression_manual <- apply(expression, 1, function(gene_expression) {
+    full_model <- lm(gene_expression ~ batch + treatment)
+    reduced_model <- lm(gene_expression ~ treatment)
+    # isolate the component of the gene expression predictions that is due to the batch effect.
+    # Is the portion of gene expression that can be attributed solely to the batch, independent of the biological variable (treatment).
+    batch_effect <- full_model$fitted.values - reduced_model$fitted.values
+    adjusted_expression <- gene_expression - batch_effect # remove the batch effect
+    return(adjusted_expression)
+})
+
+
+# Convert adjusted expression to a matrix for easier handling
+adjusted_expression_matrix_manual <- matrix(unlist(adjusted_expression_manual), nrow = num_genes, byrow = TRUE)
+colnames(adjusted_expression_matrix_manual) <- colnames(expression)
+rownames(adjusted_expression_matrix_manual) <- rownames(expression)
+
+# Adjust using limma's removeBatchEffect while preserving biological effects
+design_matrix <- model.matrix(~treatment)
+adjusted_expression_limma <- removeBatchEffect(expression, batch = batch, design = design_matrix)
+
+# Comparing the two approaches
+comparison <- adjusted_expression_matrix_manual - adjusted_expression_limma
+print("Difference between Manual and limma Approaches:")
+print(head(comparison))
+```
+
+### Batch correction if you do not want to preserve anything
+
+```{r}
+# Parameters
+num_genes <- 100
+num_samples <- 12
+
+# Simulate some data: 100 genes and 12 samples
+# Base expression levels
+base_expression <- matrix(rnorm(num_genes * num_samples, mean = 10, sd = 3), nrow = num_genes, ncol = num_samples)
+rownames(base_expression) <- paste("Gene", 1:num_genes)
+colnames(base_expression) <- paste("Sample", 1:num_samples)
+
+# Create batch factors
+batch <- factor(rep(c("Batch1", "Batch2", "Batch3"), 4))
+
+# Create a biological factor (treatment)
+treatment <- factor(rep(c("Control", "Treatment"), 6))
+
+# Apply consistent batch effects
+batch_effects <- c(5, -4, 9) # Different consistent effects for each batch
+batch_matrix <- matrix(batch_effects[as.integer(batch)], nrow = num_genes, ncol = num_samples, byrow = TRUE)
+
+# Apply consistent treatment effects
+treatment_effects <- c(0, 15) # No effect for control, positive effect for treatment
+treatment_matrix <- matrix(treatment_effects[as.integer(treatment)], nrow = num_genes, ncol = num_samples, byrow = TRUE)
+
+expression <- base_expression + batch_matrix + treatment_matrix
+# Manual adjustment using lm() preserving biological condition
+adjusted_expression_manual <- apply(expression, 1, function(gene_expression) {
+    model <- lm(gene_expression ~ batch)
+    adjusted_expression <- residuals(model) + mean(gene_expression) # Adding back the mean
+    return(adjusted_expression)
+})
+
+
+
+
+# Convert adjusted expression to a matrix for easier handling
+adjusted_expression_matrix_manual <- matrix(unlist(adjusted_expression_manual), nrow = num_genes, byrow = TRUE)
+colnames(adjusted_expression_matrix_manual) <- colnames(expression)
+rownames(adjusted_expression_matrix_manual) <- rownames(expression)
+
+# Adjust using limma's removeBatchEffect while preserving biological effects
+design_matrix <- model.matrix(~treatment)
+adjusted_expression_limma <- removeBatchEffect(expression,
+    batch = batch,
+    design = matrix(1, ncol(expression), 1) # essentially says, there are no experimental conditions, all belong to same category
+)
+
+
+# Print the results
+print("Adjusted Expression Matrix (Manual):")
+print(head(adjusted_expression_matrix_manual))
+
+print("Adjusted Expression Matrix (limma):")
+print(head(adjusted_expression_limma))
+
+# Comparing the two approaches
+comparison <- adjusted_expression_matrix_manual - adjusted_expression_limma
+print("Difference between Manual and limma Approaches:")
+print(sum(comparison))
+
+```
