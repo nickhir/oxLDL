@@ -260,7 +260,6 @@ ggsave(
 
 
 ### Fit the model
-
 ```{r}
 # Split the data into training and test set
 set.seed(50)
@@ -327,8 +326,10 @@ mean(predicted.classes == y_test)
 ```
 
 
-### Fit the model with scaleing
-```{r}
+### Fit the model with scaling
+During training/testing no difference. 
+On our data, it performes "worse", i.e. more missmatches. 
+```{r, eval=FALSE}
 # Split the data into training and test set
 set.seed(50)
 training_samples <- mdata$sex %>% 
@@ -365,7 +366,7 @@ best_lambda <- cv_fit$lambda.min
 # Final model with lambda.min
 # this uses all of the train data
 # the cv model above just the best fold, i.e. misses 1/10 of the data
-lasso.model <- glmnet(x_train, y_train,
+lasso.model <- glmnet(trainTransformed, y_train,
     alpha = 1, 
     family = "binomial",
     lambda = best_lambda
@@ -397,16 +398,9 @@ mean(predicted.classes == y_test)
 ```
 
 
-### Plot the prediction
+### Plot the training data
+
 ```{r}
-dds <- estimateSizeFactors(dds)
-
-# plot_data_train <- t(log1p(counts(dds, normalize=TRUE)))[,predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
-#     data.frame() %>%
-#     rownames_to_column("sampleid") %>%
-#     pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
-#     left_join(., mdata %>% select(sampleid=sampleID, sex), by = "sampleid")
-
 plot_data_train <- train_data[, predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
     data.frame() %>%
     rownames_to_column("sampleid") %>%
@@ -425,7 +419,6 @@ p <- ggplot(plot_data_train, aes(x = sex, y = norm_cnts)) +
         aes(group = sex),
         position = position_dodge(width = 0.5)
     )
-
 ggsave(
     plot=p,
     filename = here("sex_inference", "results", "training_boxplots.png"),
@@ -433,6 +426,51 @@ ggsave(
     height=5,
     dpi=350,
     scale=1.35
+)
+
+### Waterfall plot of the coefficients
+data <- coef(lasso.model) %>%
+    as.matrix() %>%
+    data.frame() %>%
+    filter(s0 != 0) %>%
+    arrange(s0) %>%
+    magrittr::set_colnames("Coefficient") %>% 
+    rownames_to_column("gene") %>% 
+    filter(gene != "(Intercept)")
+
+
+
+# Create waterfall plot with labels
+waterfall_plot <- ggplot(data, aes(x = reorder(gene, Coefficient), y = Coefficient, fill = reorder(gene, Coefficient), label = gene)) +
+    geom_col(show.legend = TRUE) +
+    geom_text(aes(y = Coefficient),
+        position = position_dodge(width = 0.9),
+        vjust = ifelse(data$Coefficient >= 0, -0.5, 1.5),
+        fontface = "bold"
+    ) +
+    scale_fill_manual(values = c(
+        "#BD1616", "#82E0AA", "#58D68D",
+        "#2ECC71", "#28B463", "#239B56"
+    )) +
+    labs(
+        title = "Relevant Features for Sex Prediction",
+        x = NULL, # Removing x-axis label
+        y = "Coefficient",
+    ) +
+    theme_Publication() +
+    theme(
+        axis.text.x = element_blank(),
+        legend.position = "none"
+    ) +
+    ylim(c(-1, 1))
+
+ggsave(
+    plot = waterfall_plot,
+    filename = here("sex_inference", "results", "waterfallplot_featureImportance.png"),
+    width = 7,
+    height = 5,
+    dpi = 350,
+    scale = 1.35
 )
 ```
 
@@ -467,52 +505,28 @@ adjusted_counts_our_data <- limma::removeBatchEffect(norm_data_our,
 )
 
 
-
 stopifnot(all(rownames(adjusted_counts_our_data) == rownames(adjusted_counts)))
 probabilities_our_data <- lasso.model %>% predict(
     newx = t(adjusted_counts_our_data),
     type = "response"
 )
 our_predicted_class <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
-
 all(mdata_our$sampleid == rownames(our_predicted_class))
-
+mdata_our$predicted_prob <- probabilities_our_data[,1]
 mdata_our$predicted_sex <- our_predicted_class[,1]
+table(mdata_our$predicted_sex == mdata_our$sex)
 
-table(mdata_our$predicted_sex != mdata_our$sex)
-
-
-plot_density(probabilities_our_data[,1])
-
-
-
-
-
+confusion_matrix <- confusionMatrix(factor(mdata_our$predicted_sex), factor(mdata_our$sex))
+print(confusion_matrix)
 ```
 
 
-### Compare the input distributions
+### Investigate feature distribution
 ```{r}
 # Function to generate a density plot
-plot_density <- function(data_vector) {
-  # Ensure the input is a numeric vector
-  if (!is.numeric(data_vector)) {
-    stop("Input must be a numeric vector.")
-  }
-  
-  # Create the ggplot density plot
-  plot <- ggplot(data = data.frame(x = data_vector), aes(x = x, y=after_stat(scaled))) +
-    geom_density(fill = "blue", alpha = 0.5) + # You can change the color and transparency
-    labs(title = "Density Plot", x = "Data", y = "Density") +
-    theme_Publication()
-  
-  # Print the plot
-  plot
-}
-
-plot_density_together <- function(train, test) {
-    df <- data.frame(data = c(train, test), label = c(rep("Train", length(train)), rep("Our", length(test))))
-    plot <- ggplot(data = df, aes(x = data, y = after_stat(scaled), fill=label)) +
+plot_density <- function(data_vector, sex = waiver()) {
+    # Create the ggplot density plot
+    plot <- ggplot(data = data.frame(x = data_vector, sex = sex), aes(x = x, y = after_stat(scaled), fill = sex)) +
         geom_density(alpha = 0.5) + # You can change the color and transparency
         labs(title = "Density Plot", x = "Data", y = "Density") +
         theme_Publication()
@@ -521,77 +535,151 @@ plot_density_together <- function(train, test) {
     plot
 }
 
-plot_cnt_distr <- function(gene) {
-    # train data
-    p1 <- plot_density(log1p(counts(dds, normalize = T)[gene, ])) + ggtitle("Raw Counts")
-    p2 <- plot_density(norm_data[gene, ]) + ggtitle("Norm Counts")
-    p3 <- plot_density(adjusted_counts[gene, ]) + ggtitle("Adjusted Counts")
-
-    # our data
-    p4 <- plot_density(log1p(counts(dds_our, normalize = T)[gene, ])) + ggtitle("Raw Counts Our")
-    p5 <- plot_density(norm_data_our[gene, ]) + ggtitle("Norm Counts Our")
-    p6 <- plot_density(adjusted_counts_our_data[gene, ]) + ggtitle("Adjusted Counts Our")
-
-    wrap_plots(p1, p2, p3, p4, p5, p6, ncol = 3) + plot_annotation(title = gene)
-}
-
-plot_cnt_distr_together <- function(gene, scale=F) {
-    if (scale) {
-        p1 <- plot_density_together(
-            scale(log1p(counts(dds, normalize = T)[gene, ]))[,1],
-            scale(log1p(counts(dds_our, normalize = T)[gene, ]))[,1]
-        ) + ggtitle("Raw Counts")
-
-        p2 <- plot_density_together(
-            scale(norm_data[gene, ])[, 1],
-            scale(norm_data_our[gene, ])[,1]
-        ) + ggtitle("VST Normalization")
-
-        p3 <- plot_density_together(
-            scale(adjusted_counts[gene, ])[, 1],
-            scale(adjusted_counts_our_data[gene, ])[, 1]
-        ) + ggtitle("Adjusted Data")
-        return(wrap_plots(p1, p2, p3, ncol = 3) + plot_annotation(title = gene))
-    }
-    p1 <- plot_density_together(
-        log1p(counts(dds, normalize = T)[gene, ]),
-        log1p(counts(dds_our, normalize = T)[gene, ])
-    ) + ggtitle("Raw Counts")
-
-    p2 <- plot_density_together(
-        norm_data[gene, ],
-        norm_data_our[gene, ]
-    ) + ggtitle("VST Normalization")
-
-    p3 <- plot_density_together(
-        adjusted_counts[gene, ],
-        adjusted_counts_our_data[gene, ]
-    ) + ggtitle("Adjusted Data")
-    return(wrap_plots(p1, p2, p3, ncol = 3) + plot_annotation(title = gene))
-}
-
-
-# some of the genes do not follow the same distribution in our test and prediction dataset.
-
-all_distr_together <- lapply(predictive_genes[-which(predictive_genes == "(Intercept)")], function(x){
-    plot_cnt_distr_together(x)
+distribution_plots <- lapply(predictive_genes[-which(predictive_genes == "(Intercept)")], function(gene) {
+    train_data <- scale(adjusted_counts[gene, ])
+    our_data <- scale(adjusted_counts_our_data[gene, ])
+    min_value <- floor(min(train_data, our_data))
+    max_value <- as.integer(max(train_data, our_data)) + 1
+    train_plot <- plot_density(train_data, mdata$sex) +
+        theme(axis.title.x = element_blank()) +
+        xlim(c(min_value, max_value)) +
+        ggtitle(paste0("Training Data - ", gene))
+    our_data_plot <- plot_density(our_data, mdata_our$sex) +
+        xlab("Normalized Expression") +
+        xlim(c(min_value, max_value)) +
+        ggtitle(paste0("Our Data - ", gene))
+    combined <- (wrap_plots(train_plot, our_data_plot, ncol = 1) &
+        theme(legend.position = "none")) %>% ggplotify::as.ggplot()
+    return(combined)
 })
-names(all_distr_together) <- predictive_genes[-which(predictive_genes == "(Intercept)")]
-all_distr_together
+names(distribution_plots) <- predictive_genes[-which(predictive_genes == "(Intercept)")]
 
-
-
-all_distr_together_scale <- lapply(predictive_genes[-which(predictive_genes == "(Intercept)")], function(x){
-    plot_cnt_distr_together(x, scale=T)
-})
-names(all_distr_together_scale) <- predictive_genes[-which(predictive_genes == "(Intercept)")]
-all_distr_together_scale
-
-
+for (i in names(distribution_plots)) {
+    ggsave(
+        file = here("sex_inference", "results", str_interp("${i}_data_distribution_scaled.png")),
+        plot =distribution_plots[[i]],
+        width=14,
+        height=9,
+        dpi=300,
+        )
+}
 
 
 ```
 
+
+### Investigate the missmatches
+We do not observe any enrichment of missmatches in any condition/group
+```{r}
+# Function to generate a density plot
+plot_density <- function(data_vector, sex = waiver()) {
+    # Create the ggplot density plot
+    plot <- ggplot(data = data.frame(x = data_vector, sex = sex), aes(x = x, y = after_stat(scaled), fill = sex)) +
+        geom_density(alpha = 0.5) + # You can change the color and transparency
+        labs(title = "Density Plot", x = "Data", y = "Density") +
+        theme_Publication()
+
+    # Print the plot
+    plot
+}
+
+# plot the per cell line distribution of
+lines <- mdata_our %>%
+    mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
+    filter(sex_mismatch == "mismatch") %>%
+    pull(line) %>%
+    unique()
+
+per_line_prob_distr <- pbmcapply::pbmclapply(1:length(lines), function(i) {
+    tmp_line <- lines[[i]]
+    tmp_df <- mdata_our %>%
+        filter(line == tmp_line)
+    
+    if(nrow(tmp_df)<2){
+        return()
+    }
+
+    hipsci_sex <- tmp_df %>%
+        pull(sex) %>%
+        unique()
+
+    predicted_sex_male <- tmp_df %>%
+        filter(predicted_sex == "Male") %>%
+        pull() %>%
+        length()
+
+    predicted_sex_female <- tmp_df %>%
+        filter(predicted_sex == "Female") %>%
+        pull() %>%
+        length()
+
+    p <- plot_density(tmp_df$predicted_prob, "random") +
+        theme(legend.position = "none") +
+        ggtitle(str_interp("HipSci line: ${tmp_line}")) +
+        scale_fill_manual(values = "lightgrey") +
+        xlab("Probability of 'Male'") +
+        xlim(c(0, 1)) +
+        geom_text(
+            x = 0.8,
+            y = 1,
+            label = str_interp("HipSci Sex:\n${hipsci_sex}"),
+            inherit.aes = F,
+        ) +
+        geom_text(
+            x = 0.8,
+            y = 0.90,
+            label = str_interp("Predicted Sex:\n ${predicted_sex_female} times female,\n${predicted_sex_male} times male"), inherit.aes = F,
+        )
+    return(p)
+}, mc.cores = 5)
+per_line_prob_distr <- per_line_prob_distr[!sapply(per_line_prob_distr, is.null)]
+
+pdf(here("sex_inference", "results", "per_line_prob_distr.pdf"), width=10)
+for (i in 1:length(per_line_prob_distr)){
+    print(i)
+    print(per_line_prob_distr[[i]])
+}
+dev.off()
+
+
+# Some "outlier" samples, for example in yair1 or dipe1
+# but also some that are completely "wrong".
+# very high confidence of female for all 6 but label is actually male.
+# for example curn3, uoxz4, airc66, ffdc11, vopm2, peop4, ...
+# some where just uncertain in general for example xiby4 or lizq3 -> all close to 0.5
+
+
+
+# in our expression plot, label these extreme outliers.
+plot_data_ours<- t(adjusted_counts_our_data)[, predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+    data.frame() %>%
+    rownames_to_column("sampleid") %>%
+    pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
+    left_join(., mdata_our %>% select(sampleid, sex, predicted_sex, predicted_prob, line),
+        by = "sampleid"
+    )
+
+abnormal_lines <- mdata_our %>%
+    mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
+    filter(sex_mismatch == "mismatch") %>%
+    group_by(line) %>%
+    tally() %>%
+    filter(n == 6) %>%
+    slice_head(n = 5) %>%
+    pull(line)
+
+p <- ggplot(plot_data_ours, aes(x = sex, y = norm_cnts)) +
+    ggbeeswarm::geom_quasirandom(width = 0.15, size = 0.1) +
+    ggbeeswarm::geom_quasirandom(
+        data = plot_data_ours %>% filter(line %in% abnormal_lines),
+        aes(x = sex, y = norm_cnts, color=line),
+        inherit.aes = FALSE,
+        width = 0.15, size = 1
+    ) +
+    facet_wrap(~gene, scales = "free_y") +
+    chameleon::scale_color_chameleon()+ 
+    theme_Publication()
+```
 
 
 ```{r}
