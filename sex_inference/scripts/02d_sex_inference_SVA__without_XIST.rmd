@@ -31,7 +31,6 @@ library(DESeq2)
 library(tidyverse)
 library(data.table)
 library(caret)
-library(glmnet)
 library(here)
 library(httpgd)
 library(patchwork)
@@ -48,8 +47,9 @@ all samples in that dataset that come from macrophage and that have sex informat
 Note: We have changed from macrophages to whole blood. Reason for this is that some "macrophage" datasets are 
 acutally just using whole blood when you look them up...
 
-Here, we will fit the lasso regression to predict sex.
-
+Here, we will fit the lasso regression to predict sex. We will exclude "XIST" in our prediction because the
+distribution looks bad for our data. There have also been reports that show that XIST expression in HipSci cell lines is dodgy:
+(see [this](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8097692/) and [this](https://www.cell.com/cell-reports/pdf/S2211-1247(19)30326-2.pdf))
 
 ```{r}
 # load in mdata
@@ -81,8 +81,6 @@ our_dds <- readRDS(here("QC", "results", "dds_final.rds"))
 
 # figure out which genes are shared between the datasets
 shared_genes <- intersect(rownames(our_dds), raw_data$gene)
-
-
 
 raw_data <- raw_data %>%
     filter(gene %in% shared_genes)
@@ -188,7 +186,7 @@ mod0 <- model.matrix(~1, colData(dds))
 # saveRDS(svseq, here("sex_inference", "results", "sva_10_training_data.rds"))
 svseq <- readRDS(here("sex_inference", "results", "sva_10_training_data.rds"))
 SVs <- svseq$sv %>% magrittr::set_colnames(paste0("SV", 1:10))
-mdata <- cbind(mdata %>% select(-contains("SV")), SVs)
+mdata <- cbind(mdata %>% dplyr::select(-contains("SV")), SVs)
 formula <- as.formula(paste("~", paste0("SV", 1:10, collapse = " + ")))
 cov_mod <- model.matrix(formula, mdata)[, -1] # this removes the intercept term. See t
 
@@ -259,86 +257,19 @@ ggsave(
 ```
 
 
-
-### Fit the model
-THIS IS DEPRECATED. FITTING WITH SCALEING MAKES MORE SENSE
-
-```{r, eval=F}
-# Split the data into training and test set
-set.seed(50)
-training_samples <- mdata$sex %>% 
-  createDataPartition(p = 0.85, list = FALSE)
-train_data  <- t(adjusted_counts)[training_samples, ]
-test_data <- t(adjusted_counts)[-training_samples, ]
-train_mdata <- mdata[training_samples, ]
-test_mdata <- mdata[-training_samples, ]
-
-# Prepare the matrices for glmnet
-x_train <- as.matrix(train_data)
-y_train <- train_mdata$sex
-
-x_test <-  as.matrix(test_data)
-y_test <- test_mdata$sex
-
-# Fit logistic regression using cross validation
-cv_fit <- cv.glmnet(x_train, y_train,
-    family = "binomial",
-    type.measure = "class",
-    n.folds = 10,
-    alpha = 1 # 1 corresponds to lasso regression
-)
-plot(cv_fit)
-
-
-# Best lambda
-best_lambda <- cv_fit$lambda.min
-# print(best_lambda)
-
-
-# Final model with lambda.min
-# this uses all of the train data
-# the cv model above just the best fold, i.e. misses 1/10 of the data
-lasso.model <- glmnet(x_train, y_train,
-    alpha = 1, 
-    family = "binomial",
-    lambda = best_lambda
-)
-
-# saveRDS(
-#     lasso.model,
-#     here("sex_inference", "results", "lasso_model_sex.rds")
-# )
-
-predictive_genes <- coef(lasso.model) %>%
-    as.matrix() %>%
-    data.frame() %>%
-    filter(s0 != 0) %>%
-    arrange(s0) %>%
-    rownames()
-
-
-# Make prediction on test data
-probabilities <- lasso.model %>% predict(
-    newx = x_test,
-    type = "response"
-)
-predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
-
-# Model accuracy
-mean(predicted.classes == y_test)
-```
-
-
 ### Fit the model with scaling
 During training/testing no difference. 
-On our data, it performes "worse", i.e. more mismatches. 
+
 ```{r, eval=FALSE}
+# remove XIST
+adjusted_counts_wo_XIST <- adjusted_counts[-which(rownames(adjusted_counts) == "XIST"), ]
+
 # Split the data into training and test set
 set.seed(50)
 training_samples <- mdata$sex %>% 
   createDataPartition(p = 0.85, list = FALSE)
-train_data  <- t(adjusted_counts)[training_samples, ]
-test_data <- t(adjusted_counts)[-training_samples, ]
+train_data  <- t(adjusted_counts_wo_XIST)[training_samples, ]
+test_data <- t(adjusted_counts_wo_XIST)[-training_samples, ]
 train_mdata <- mdata[training_samples, ]
 test_mdata <- mdata[-training_samples, ]
 
@@ -443,16 +374,21 @@ data <- coef(lasso.model) %>%
 
 
 # Create waterfall plot with labels
-waterfall_plot <- ggplot(data, aes(x = reorder(gene, Coefficient), y = Coefficient, fill = reorder(gene, Coefficient), label = gene)) +
+waterfall_plot <- ggplot(data, aes(
+    x = reorder(gene, Coefficient), y = Coefficient,
+    fill = reorder(gene, Coefficient), label = gene
+)) +
     geom_col(show.legend = TRUE) +
     geom_text(aes(y = Coefficient),
         position = position_dodge(width = 0.9),
-        vjust = ifelse(data$Coefficient >= 0, -0.5, 1.5),
-        fontface = "bold"
+        vjust = 0.5,
+        hjust=ifelse(data$Coefficient >= 0, -0.1, 1.1),
+        fontface = "bold",
+        angle=90
     ) +
     scale_fill_manual(values = c(
-        "#BD1616", "#82E0AA", "#58D68D",
-        "#2ECC71", "#28B463", "#239B56"
+        rep("#BD1616", sum(data$Coefficient < 0)),
+        rep("#239B56", sum(data$Coefficient > 0))
     )) +
     labs(
         title = "Relevant Features for Sex Prediction",
@@ -465,11 +401,15 @@ waterfall_plot <- ggplot(data, aes(x = reorder(gene, Coefficient), y = Coefficie
         legend.position = "none"
     ) +
     ylim(c(-1, 1))
+waterfall_plot
 
+pos_features <- data %>% slice_max(., order_by = Coefficient, n =5) %>% pull(gene)
+neg_features <- data %>% slice_min(., order_by = Coefficient, n =5) %>% pull(gene)
+most_pred_features <- c(pos_features, neg_features)
 ggsave(
     plot = waterfall_plot,
-    filename = here("sex_inference", "results", "waterfallplot_featureImportance.png"),
-    width = 7,
+    filename = here("sex_inference", "results", "waterfallplot_featureImportance_wo_XIST.png"),
+    width = 9,
     height = 5,
     dpi = 350,
     scale = 1.35
@@ -482,7 +422,6 @@ dds_our <- readRDS(here("QC", "results", "dds_final.rds"))
 # order the genes like our training data
 dds_our <- dds_our[rownames(dds_our) %in% shared_genes, ]
 dds_our <- dds_our[match(shared_genes, rownames(dds_our)),]
-stopifnot(all(colnames(t(adjusted_counts)) == rownames(dds_our)))
 
 # do the same preprocessing as the training data
 norm_data_our <- log1p(counts(dds_our, normalize=T))
@@ -503,11 +442,14 @@ adjusted_counts_our_data <- limma::removeBatchEffect(norm_data_our,
     covariates = cov_mod,
     design = mod
 )
+adjusted_counts_our_data_transformed <- t(predict(preProcValues, t(adjusted_counts_our_data)))
 
 
-stopifnot(all(rownames(adjusted_counts_our_data) == rownames(adjusted_counts)))
+adjusted_counts_our_data_transformed_wo_XIST <- adjusted_counts_our_data_transformed[-which(rownames(adjusted_counts_our_data_transformed) == "XIST"), ]
+
+
 probabilities_our_data <- lasso.model %>% predict(
-    newx = t(adjusted_counts_our_data),
+    newx = t(adjusted_counts_our_data_transformed_wo_XIST),
     type = "response"
 )
 our_predicted_class <- ifelse(probabilities_our_data > 0.5, "Male", "Female")
@@ -519,6 +461,7 @@ table(mdata_our$predicted_sex == mdata_our$sex)
 confusion_matrix <- confusionMatrix(factor(mdata_our$predicted_sex), factor(mdata_our$sex))
 print(confusion_matrix)
 ```
+
 
 ### Investigate feature distribution
 ```{r}
@@ -535,11 +478,11 @@ plot_density <- function(data_vector, sex = waiver()) {
 }
 
 distribution_plots <- lapply(predictive_genes[-which(predictive_genes == "(Intercept)")], function(gene) {
-    train_data <- scale(adjusted_counts[gene, ])
-    our_data <- scale(adjusted_counts_our_data[gene, ])
+    train_data <- trainTransformed[,gene]
+    our_data <- adjusted_counts_our_data_transformed[gene, ]
     min_value <- floor(min(train_data, our_data))
     max_value <- as.integer(max(train_data, our_data)) + 1
-    train_plot <- plot_density(train_data, mdata$sex) +
+    train_plot <- plot_density(train_data, y_train) +
         theme(axis.title.x = element_blank()) +
         xlim(c(min_value, max_value)) +
         ggtitle(paste0("Training Data - ", gene))
@@ -553,16 +496,43 @@ distribution_plots <- lapply(predictive_genes[-which(predictive_genes == "(Inter
 })
 names(distribution_plots) <- predictive_genes[-which(predictive_genes == "(Intercept)")]
 
+distribution_plots$TXLNGY
 for (i in names(distribution_plots)) {
     ggsave(
         file = here("sex_inference", "results", str_interp("${i}_data_distribution_scaled.png")),
-        plot =distribution_plots[[i]],
-        width=14,
-        height=9,
-        dpi=300,
-        )
+        plot = distribution_plots[[i]],
+        width = 14,
+        height = 9,
+        dpi = 300,
+    )
 }
 
+
+
+plot_density <- function(data_vector) {
+    # Create the ggplot density plot
+    plot <- ggplot(data = data.frame(x = data_vector), aes(x = x, y = after_stat(scaled))) +
+        geom_density(alpha = 0.5, fill="grey") + # You can change the color and transparency
+        labs(title = "Density Plot", x = "Data", y = "Density") +
+        theme_Publication()
+
+    # Print the plot
+    plot
+}
+p1 <- plot_density(scale(adjusted_counts["XIST",])) +
+    theme(axis.title.x = element_blank()) +
+    xlim(c(-3, 3)) +
+    ggtitle(paste0("Training Data - ", "XIST"))
+
+
+p2<-plot_density(adjusted_counts_our_data_transformed["XIST",]) +
+    xlab("Normalized Expression") +
+    xlim(c(-3, 3)) +
+    ggtitle(paste0("Our Data - ", "XIST"))
+
+
+combined <- (wrap_plots(p1, p2, ncol = 1) &
+    theme(legend.position = "none")) %>% ggplotify::as.ggplot()
 
 ```
 
@@ -576,7 +546,6 @@ plot_density <- function(data_vector, sex = waiver()) {
         geom_density(alpha = 0.5) + # You can change the color and transparency
         labs(title = "Density Plot", x = "Data", y = "Density") +
         theme_Publication()
-
     # Print the plot
     plot
 }
@@ -625,6 +594,7 @@ plot_prob_distr <- function(line) {
     return(p)
 }
 
+
 # plot the per cell line distribution of
 lines <- mdata_our %>%
     mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
@@ -654,13 +624,17 @@ dev.off()
 # some where just uncertain in general for example xiby4 or lizq3 -> all close to 0.5
 
 # in our expression plot, label these extreme outliers.
-plot_data_ours <- t(adjusted_counts_our_data)[, predictive_genes[-which(predictive_genes == "(Intercept)")]] %>%
+plot_data_ours <- t(adjusted_counts_our_data)[, data %>%
+    slice_max(order_by = abs(Coefficient), n = 5) %>%
+    pull(gene)] %>%
     data.frame() %>%
     rownames_to_column("sampleid") %>%
     pivot_longer(., cols = !sampleid, values_to = "norm_cnts", names_to = "gene") %>%
     left_join(., mdata_our %>% select(sampleid, sex, predicted_sex, predicted_prob, line),
         by = "sampleid"
     )
+
+
 
 
 # abnormal_lines <- mdata_our %>%
@@ -672,7 +646,7 @@ plot_data_ours <- t(adjusted_counts_our_data)[, predictive_genes[-which(predicti
 #     slice_head(n = 5) %>%
 #     pull(line)
 
-abnormal_lines = "lizq3"
+abnormal_lines = "dard1"
 
 prob_distr <- plot_prob_distr(abnormal_lines) + theme(plot.title = element_blank())
 expr_distribution <- ggplot(plot_data_ours, aes(x = sex, y = norm_cnts)) +
@@ -685,24 +659,127 @@ expr_distribution <- ggplot(plot_data_ours, aes(x = sex, y = norm_cnts)) +
     ) +
     ylab("Expression\n(norm. logcounts)") +
     xlab("Recorded Sex in meta data") +
-    facet_wrap(~gene, scales = "free_y") +
+    facet_wrap(~gene, scales = "free_y", ncol=3) +
     scale_color_manual(values = "#11d4d4") +
     theme_Publication() +
     theme(legend.position = "none")
 
-(wrap_plots(prob_distr, expr_distribution, ncol = 2) + plot_layout(widths = c(1, 1.5))) %>%
+(wrap_plots(prob_distr, expr_distribution, ncol = 2) + plot_layout(widths = c(1, 1.5)))  %>% 
     ggsave(
         plot = .,
-        file = here("sex_inference", "results", str_interp("${abnormal_lines}_prediction.png")),
+        file = here("sex_inference", "results", str_interp("${abnormal_lines}_prediction_wo_XIST.png")),
         dpi=300,
         height=7,
         width=13.5
     )
 
-
-
-
+mdata_our %>%
+    mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
+    filter(sex_mismatch == "mismatch") %>%
+    group_by(line) %>%
+    tally(name="wrong_label") %>%
+    data.frame() %>%
+    left_join(., mdata_our %>%
+        group_by(line) %>%
+        tally(name = "total_count")) %>%
+    arrange(total_count)
 ```
+
+
+
+#### Create a PDF with all the "problematic" lines
+When investigating this, weird things pop up...
+For example the following: 
+sucd3 -> 6 times correct label, 1 time male. 
+The donor right samples before that ("MM_oxLDL9752047" to "MM_oxLDL9752051") are only 5 (M2_stim misses and sucd3 has M2_stim twice).
+voqc2 is female, but according to prediction male (just like the one outlier from sucd3). Maybe a weird slip?
+
+---
+
+Same fir uaqe1: 
+7 samples, M2_stim is doubled but misses from voqm2 (which comes directly before it in same oxLDL batch).
+voqm2 is female so would match the "wrong" prediction.
+
+---
+Same for womt1:
+7 samples, M2_stim is doubled but misses from quze6 (which comes directly before it in same oxLDL batch).
+quze6 is female so would match the "wrong" prediction.
+
+----
+xarj1
+12 samples, 6 are perfect males, 6 perfect females. different oxldl sets, I think this is flat out the wrong donor 
+for one of the sets. 
+
+
+
+
+
+```{r}
+mdata_our %>%
+    mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
+    filter(sex_mismatch == "mismatch") %>%
+    group_by(line) %>%
+    tally(name = "wrong_label") %>%
+    data.frame() %>%
+    left_join(., mdata_our %>%
+        group_by(line) %>%
+        tally(name = "total_count")) %>%
+    left_join(., mdata_our %>% select(line, oxldlset) %>% distinct()) %>% arrange(oxldlset)
+
+
+mdata_our %>%
+    mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
+    filter(sex_mismatch == "mismatch") %>%
+    group_by(line) %>%
+    tally(name = "wrong_label") %>%
+    data.frame() %>%
+    left_join(., mdata_our %>%
+        group_by(line) %>%
+        tally(name = "total_count"))  %>% filter(wrong_label == total_count) %>% filter(total_count>3)
+
+problematic_lines <- mdata_our %>%
+    mutate(sex_mismatch = ifelse(predicted_sex != sex, "mismatch", "match")) %>%
+    filter(sex_mismatch == "mismatch") %>%
+    group_by(line) %>%
+    tally(name="wrong_label") %>%
+    data.frame() %>%
+    left_join(., mdata_our %>%
+        group_by(line) %>%
+        tally(name = "total_count")) %>%
+    arrange(total_count) %>% pull(line)
+
+plots <- lapply(problematic_lines, function(i) {
+    print(i)
+    prob_distr <- plot_prob_distr(i)
+    if(is.null(prob_distr)){
+        prob_distr <- ggplot()
+    }
+    expr_distribution <- ggplot(plot_data_ours, aes(x = sex, y = norm_cnts)) +
+        ggbeeswarm::geom_quasirandom(width = 0.15, size = 0.1) +
+        ggbeeswarm::geom_quasirandom(
+            data = plot_data_ours %>% filter(line %in% i),
+            aes(x = sex, y = norm_cnts, color = line),
+            inherit.aes = FALSE,
+            width = 0.15, size = 1
+        ) +
+        ylab("Expression\n(norm. logcounts)") +
+        xlab("Recorded Sex in meta data") +
+        facet_wrap(~gene, scales = "free_y", ncol = 3) +
+        scale_color_manual(values = "#11d4d4") +
+        theme_Publication() +
+        theme(legend.position = "none")
+    p <- (wrap_plots(prob_distr, expr_distribution, ncol = 2) + plot_layout(widths = c(1, 1.5))) 
+})
+
+pdf(here("sex_inference", "results", str_interp("problematic_lines.pdf")),
+    height = 7, width = 13.5
+)
+for (i in plots) {
+    print(i)
+}
+dev.off()
+```
+
 
 ### Highlight all the mismatches
 ```{r}
@@ -744,7 +821,7 @@ p <- ggplot() +
 
 ggsave(
     plot = p,
-    file = here("sex_inference", "results", "expression_mismatches.png"),
+    file = here("sex_inference", "results", "expression_mismatches_wo_XIST.png"),
     dpi = 300,
     height = 8.5,
     width = 12
@@ -807,7 +884,6 @@ ggsave(
     width = 6.2
 )
 
-mdata_our %>% filter(grepl("oxLDL975666", sampleid))
 
 
 

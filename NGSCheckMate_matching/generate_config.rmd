@@ -1,0 +1,90 @@
+---
+title: "Check SNPs"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+## **Introduction**
+I want to make sure that the SNPs we are using are actually in exons, because this is where we have coverage with RNAseq
+
+
+```{r, load libraries}
+library(DESeq2)
+library(magrittr)
+library(PCAtools)
+library(tidyverse)
+library(umap)
+library(patchwork)
+library(httpgd)
+library(GenomicRanges)
+library(rtracklayer)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+### Check where SNPs are located
+```{r}
+gff_file <- import("/rds/user/nh608/hpc-work/oxLDL/NGSCheckMate_matching/data/Homo_sapiens.GRCh38.111.gff3.gz", format="gff3")
+exons <- subset(gff_file, type == "exon")
+tmp <- data.table::fread("/rds/user/nh608/hpc-work/software/micromamba/envs/NGScheckmate_env/NGSCheckMate/SNP/SNP_GRCh38_hg38_woChr.bed", data.table = F) 
+## you may need other arguments, and you might use colClasses to speed things up
+snp_data <- GRanges(tmp[, 1],
+    IRanges(tmp[, 2], tmp[, 3]),
+    snpID = tmp[, 4],
+    A1 = tmp[, 5],
+    A2 = tmp[, 6]
+)
+
+overlaps <- findOverlaps(snp_data, exons)
+
+# 97.5% of all SNPs are in exons -> covered by our RNAseq.
+(queryHits(overlaps) %>% n_distinct())/nrow(tmp)
+```
+
+
+### Create input for the jobarray
+The job array will convert BAM to VCF file using samtools. 
+```{r}
+bam_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon",
+    pattern = "\\.bam$",
+    full.names = TRUE
+)
+out_name = bam_files %>%
+    str_remove_all(".markdup.sorted.bam") %>%
+    basename() %>%
+    paste0("/home/nh608/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon/vcf/", ., ".vcf")
+
+config_file = data.frame(filepath=bam_files, vcf_name = out_name) %>% rownames_to_column("ArrayTaskID")
+
+data.table::fwrite(
+    x = config_file,
+    file = "/rds/user/nh608/hpc-work/oxLDL/NGSCheckMate_matching/data/config_jobarray",
+    sep = "\t",
+    row.names = FALSE
+)
+
+
+
+```

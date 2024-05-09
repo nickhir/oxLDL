@@ -57,7 +57,6 @@ vcf_files <- list.files("~/work_dir/oxLDL/data/oxLDL_data/HipSci/genotype_array_
 
 vcf_file_ids <- sub(".+?-([a-z]{4}\\_?\\d?).*", "\\1", vcf_files)
 
-
 # all the vcf files that we have are covered by donor meta information :)
 stopifnot(all(substr(vcf_file_ids, 1, 4) %in% donors$id))
 
@@ -185,6 +184,42 @@ system(
 
 ### read in the file with the sex prediction
 ```{r}
+sex_prediction <- data.table::fread("/rds/project/jmmh2/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data_imputed_plink/sex_check.sexcheck") %>% data.frame()
+
+ggplot(sex_prediction, aes(x = F)) +
+    geom_histogram()+
+    theme_Publication()
+
+# assign sex according to F statistic
+
+sex_prediction$predicted_sex <- ifelse(sex_prediction$F<0.25, "Female", "Male")
+sex_prediction$line <- str_extract(sex_prediction$IID, "-[a-z]{4}") %>% substr(.,2,5)
+
+out <- left_join(
+    sex_prediction %>%
+        group_by(line) %>%
+        tally(name = "line_occurance"),
+    sex_prediction %>%
+        group_by(line, predicted_sex) %>%
+        tally(),
+    by = "line"
+) %>%
+    mutate(mismatch = ifelse(n!=line_occurance, "mismatch", "match"))
+
+# all lines are assign to the correct one.
+out$mismatch %>% table()
 
 
+
+our_dds <- readRDS(here("QC", "results", "dds_final.rds"))
+
+mdata_our <- colData(our_dds) %>%
+    data.frame() %>%
+    mutate(tmp_line = substr(line, 1, 4))
+
+final <- left_join(mdata_our, sex_prediction %>% select(line, predicted_sex) %>% distinct(), by = c("tmp_line" = "line"))
+
+# perfect match
+x<-final %>% select(line, sex, predicted_sex) %>% distinct()
+table(x$sex == x$predicted_sex, useNA="always")
 ```

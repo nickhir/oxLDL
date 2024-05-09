@@ -39,7 +39,6 @@ if (!requireNamespace("limma", quietly = TRUE)) {
 ### Batch correction while preserving a biological effect
 
 ```{r}
-
 # Parameters
 num_genes <- 100
 num_samples <- 12
