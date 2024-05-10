@@ -1,0 +1,113 @@
+---
+title: "Evaluate NGSCheckmate"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+## **Introduction**
+Evaluate the NGSCheckmate results that I when running it on the BAM files from the RNAseq. 
+
+
+```{r, load libraries}
+library(data.table)
+library(magrittr)
+library(tidyverse)
+library(httpgd)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+### Load and reformat the Checkmate results
+
+```{r}
+out_dir <- here("NGSCheckMate_matching","RNA_seq_bams_comparison")
+checkmate_res <- fread(file.path(out_dir, "output_all.txt"), data.table = FALSE) %>%
+    magrittr::set_colnames(c("sample1", "match", "sample2", "correlation", "depth"))
+
+ggplot(checkmate_res, aes(x = depth)) +
+    geom_density(alpha = 0.5) +
+    theme_Publication()
+
+
+ggplot(checkmate_res %>% filter(depth>10), aes(x = correlation, fill = match)) +
+    geom_density(alpha=0.5)+
+    theme_Publication()
+
+rbind(head(checkmate_res, 10), tail(checkmate_res, 20))
+
+checkmate_res_wide <- checkmate_res %>%
+    filter(depth > 10) %>%
+    filter(match == "matched") %>%
+    group_by(sample1) %>%
+    summarise(matched_partners = paste(sample2, collapse = ", ")) %>%
+    ungroup() %>% # to remove the grouping structure
+    mutate(n_partners = str_count(matched_partners, ",") + 1)
+```
+
+
+### Load the unmodified raw meta data
+```{r}
+mdata <- readxl::read_excel(here("data", "mdata_google_spreadsheet.xlsx"),
+    sheet = "RNA Sequencing samples"
+) %>% data.frame()
+
+# reformat some mdata entries
+mdata <- mdata %>%
+    dplyr::rename(condition = oxldl) %>%
+    dplyr::mutate(condition = ifelse(condition == 100, "stim", "ctrl")) %>%
+    dplyr::rename(sex = set) %>%
+    dplyr::mutate(group = paste(state, condition, sep = "_")) %>%
+    dplyr::select(sampleid, line, group, state, condition, sex, ethnicity, age, oxldlset, pool, batch1id)
+
+mdata$ethnicity <- case_when(
+    mdata$ethnicity == "White - White British" ~ "White British",
+    mdata$ethnicity == "White - White other" ~ "White Other",
+    mdata$ethnicity == "White - Other" ~ "White Other",
+    mdata$ethnicity == "Asian /Asian British- Indian" ~ "Asian British",
+    T ~ mdata$ethnicity
+)
+
+# define some factors
+mdata <- mdata %>%
+    mutate(
+        group = factor(group, levels = c("M0_ctrl", "M1_ctrl", "M2_ctrl", "M0_stim", "M1_stim", "M2_stim")),
+        line = factor(line),
+        state = factor(state, levels = c("M0", "M1", "M2")),
+        condition = factor(condition, levels = c("ctrl", "stim")),
+        sex = factor(sex, levels = c("Female", "Male")),
+        ethnicity = factor(ethnicity, levels = c("White British", "White Other", "Asian British", "NA")),
+        oxldlset = factor(oxldlset, levels = sort(unique(mdata$oxldlset))),
+        age = factor(age, levels = sort(unique(mdata$age))),
+        pool = factor(pool, levels = str_sort(unique(mdata$pool), numeric=T)),
+        batch1id = factor(batch1id, levels = str_sort(unique(mdata$batch1id), numeric=T)),
+    )
+```
+
+
+### Combine both
+```{r}
+
+```

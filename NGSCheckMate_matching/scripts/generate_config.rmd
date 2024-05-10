@@ -76,7 +76,12 @@ out_name = bam_files %>%
     basename() %>%
     paste0("/home/nh608/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon/vcf/", ., ".vcf")
 
-config_file = data.frame(filepath=bam_files, vcf_name = out_name) %>% rownames_to_column("ArrayTaskID")
+out_name_lifted = bam_files %>%
+    str_remove_all(".markdup.sorted.bam") %>%
+    basename()%>%
+    paste0("/home/nh608/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon/vcf/", ., "_GRCh37.vcf")
+
+config_file = data.frame(filepath=bam_files, vcf_name = out_name, vcf_lifted = out_name_lifted) %>% rownames_to_column("ArrayTaskID")
 
 data.table::fwrite(
     x = config_file,
