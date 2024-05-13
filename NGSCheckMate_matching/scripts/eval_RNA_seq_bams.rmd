@@ -45,7 +45,10 @@ source(here("helper_functions.R"))
 ```{r}
 out_dir <- here("NGSCheckMate_matching","RNA_seq_bams_comparison")
 checkmate_res <- fread(file.path(out_dir, "output_all.txt"), data.table = FALSE) %>%
-    magrittr::set_colnames(c("sample1", "match", "sample2", "correlation", "depth"))
+    magrittr::set_colnames(c("sample1", "match", "sample2", "correlation", "depth")) %>%
+    mutate(sample1 = str_remove_all(sample1, ".vcf")) %>% 
+    mutate(sample2 = str_remove_all(sample2, ".vcf"))
+
 
 ggplot(checkmate_res, aes(x = depth)) +
     geom_density(alpha = 0.5) +
@@ -56,58 +59,67 @@ ggplot(checkmate_res %>% filter(depth>10), aes(x = correlation, fill = match)) +
     geom_density(alpha=0.5)+
     theme_Publication()
 
-rbind(head(checkmate_res, 10), tail(checkmate_res, 20))
+# the checkmate results are a bit odd, because there is always missing one match.
+# for example if sampleA matches sampleB, sampleB should also match sampleA
+checkmate_res_rev <- data.frame(
+    sample1 = checkmate_res$sample2,
+    match = checkmate_res$match,
+    sample2 = checkmate_res$sample1,
+    correlation = checkmate_res$correlation,
+    depth = checkmate_res$depth
+)
 
-checkmate_res_wide <- checkmate_res %>%
+checkmate_res_wide <- rbind(checkmate_res, checkmate_res_rev) %>%
     filter(depth > 10) %>%
     filter(match == "matched") %>%
     group_by(sample1) %>%
-    summarise(matched_partners = paste(sample2, collapse = ", ")) %>%
+    summarise(
+        matched_partners = paste(sample2, collapse = ", "),
+        matched_correlation = paste(correlation, collapse = ", "),
+        matched_depth = paste(depth, collapse = ", ")
+    ) %>%
     ungroup() %>% # to remove the grouping structure
     mutate(n_partners = str_count(matched_partners, ",") + 1)
+
+
+
+
+xyz %>%
+    filter() %>%
+    filter() %>%
+    filter()
+
+
 ```
 
 
-### Load the unmodified raw meta data
+### Load our mdata and add the predicted pairs
 ```{r}
-mdata <- readxl::read_excel(here("data", "mdata_google_spreadsheet.xlsx"),
-    sheet = "RNA Sequencing samples"
-) %>% data.frame()
+mdata <- data.table::fread(here("sex_inference", "results", "mdata_with_sex_prediction.tsv")) %>%
+    data.frame() %>%
+    left_join(., checkmate_res_wide, by = c("sampleid" = "sample1"))
 
-# reformat some mdata entries
-mdata <- mdata %>%
-    dplyr::rename(condition = oxldl) %>%
-    dplyr::mutate(condition = ifelse(condition == 100, "stim", "ctrl")) %>%
-    dplyr::rename(sex = set) %>%
-    dplyr::mutate(group = paste(state, condition, sep = "_")) %>%
-    dplyr::select(sampleid, line, group, state, condition, sex, ethnicity, age, oxldlset, pool, batch1id)
-
-mdata$ethnicity <- case_when(
-    mdata$ethnicity == "White - White British" ~ "White British",
-    mdata$ethnicity == "White - White other" ~ "White Other",
-    mdata$ethnicity == "White - Other" ~ "White Other",
-    mdata$ethnicity == "Asian /Asian British- Indian" ~ "Asian British",
-    T ~ mdata$ethnicity
-)
-
-# define some factors
-mdata <- mdata %>%
-    mutate(
-        group = factor(group, levels = c("M0_ctrl", "M1_ctrl", "M2_ctrl", "M0_stim", "M1_stim", "M2_stim")),
-        line = factor(line),
-        state = factor(state, levels = c("M0", "M1", "M2")),
-        condition = factor(condition, levels = c("ctrl", "stim")),
-        sex = factor(sex, levels = c("Female", "Male")),
-        ethnicity = factor(ethnicity, levels = c("White British", "White Other", "Asian British", "NA")),
-        oxldlset = factor(oxldlset, levels = sort(unique(mdata$oxldlset))),
-        age = factor(age, levels = sort(unique(mdata$age))),
-        pool = factor(pool, levels = str_sort(unique(mdata$pool), numeric=T)),
-        batch1id = factor(batch1id, levels = str_sort(unique(mdata$batch1id), numeric=T)),
-    )
 ```
 
 
-### Combine both
+### Analyse output
 ```{r}
+mdata %>% group_by(line) %>% tally()
 
-```
+
+``` 
+
+
+```{r}
+mdata <- mdata %>%
+    left_join(., checkmate_res_wide, by=c("sampleid" = "sample1"))
+
+table(mdata$n_partners)
+
+
+
+
+
+
+
+``` 

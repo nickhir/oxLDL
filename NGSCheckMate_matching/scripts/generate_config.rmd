@@ -92,4 +92,21 @@ data.table::fwrite(
 
 
 
+our_vcfs <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon/vcf",
+    pattern = "\\_GRCh37.vcf$",
+    full.names = TRUE
+)
+hipsci_vcfs <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data_imputed",
+    pattern = "\\.vcf\\.gz$",
+    full.names = TRUE,
+    recursive = T
+)
+
+
+
+data.frame(file = c(our_vcfs, hipsci_vcfs)) %>%
+    data.table::fwrite(., file = "/rds/user/nh608/hpc-work/oxLDL/NGSCheckMate_matching/data/vcf_files.txt", row.names = FALSE, col.names = FALSE)
+
+
+
 ```

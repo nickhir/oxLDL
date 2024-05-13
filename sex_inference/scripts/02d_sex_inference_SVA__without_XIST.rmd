@@ -329,6 +329,9 @@ predicted.classes <- ifelse(probabilities > 0.5, "MALE", "FEMALE")
 
 # Model accuracy
 mean(predicted.classes == y_test)
+
+
+
 ```
 
 
@@ -460,6 +463,16 @@ table(mdata_our$predicted_sex == mdata_our$sex)
 
 confusion_matrix <- confusionMatrix(factor(mdata_our$predicted_sex), factor(mdata_our$sex))
 print(confusion_matrix)
+
+data.table::fwrite(
+    mdata_our,
+    file = here("sex_inference", "results", "mdata_with_sex_prediction.tsv"),
+    sep = "\t",
+    row.names = FALSE
+)
+
+
+
 ```
 
 

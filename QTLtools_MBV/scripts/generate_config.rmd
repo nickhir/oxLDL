@@ -1,0 +1,70 @@
+---
+title: "Generate Config files for the Jobarrays"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+
+filter()
+```
+
+## **Introduction**
+Generate Config files to run the Job Arrays.
+
+```{r, load libraries}
+library(tidyverse)
+library(here)
+```
+
+
+### Create input for the jobarray
+The job array will convert BAM to VCF file using samtools. 
+```{r}
+vcf_in_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data_imputed",
+    pattern = "\\.vcf$",
+    recursive = T,
+    full.names = TRUE
+)
+vcf_out_files <- vcf_in_files %>% str_remove(.,".vcf$") %>% paste0(.,".GRCh38.vcf")
+log_file <- file.path(dirname(vcf_out_files), "log.out")
+rejected_variants <- file.path(dirname(vcf_out_files), "rejected_variants.vcf")
+
+
+config_file = data.frame(
+    vcf_in = vcf_in_files,
+    vcf_out = vcf_out_files,
+    rejected_variants = rejected_variants,
+    log = log_file
+) %>%
+    rownames_to_column("ArrayTaskID")
+
+
+data.table::fwrite(
+    x = config_file,
+    file = "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/data/config_jobarray",
+    sep = "\t",
+    row.names = FALSE
+)
+
+5 + 5
+
+
+```
