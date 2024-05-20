@@ -710,8 +710,7 @@ voqc2 is female, but according to prediction male (just like the one outlier fro
 ---
 
 Same fir uaqe1: 
-7 samples, M2_stim is doubled but misses from voqm2 (which comes directly before it in same oxLDL batch).
-voqm2 is female so would match the "wrong" prediction.
+7 samples, M2_stim is doubled but misses from voqm2 (which comes directly before it in same oxLDL batch)
 
 ---
 Same for womt1:
@@ -722,10 +721,6 @@ quze6 is female so would match the "wrong" prediction.
 xarj1
 12 samples, 6 are perfect males, 6 perfect females. different oxldl sets, I think this is flat out the wrong donor 
 for one of the sets. 
-
-
-
-
 
 
 ```{r}

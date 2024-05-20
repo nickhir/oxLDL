@@ -43,19 +43,17 @@ source(here("helper_functions.R"))
 ### Load and reformat the Checkmate results
 
 ```{r}
-out_dir <- here("NGSCheckMate_matching","RNA_seq_bams_comparison")
+out_dir <- here("NGSCheckMate_matching","RNA_bam_comparison/")
 checkmate_res <- fread(file.path(out_dir, "output_all.txt"), data.table = FALSE) %>%
     magrittr::set_colnames(c("sample1", "match", "sample2", "correlation", "depth")) %>%
     mutate(sample1 = str_remove_all(sample1, ".vcf")) %>% 
     mutate(sample2 = str_remove_all(sample2, ".vcf"))
 
-
 ggplot(checkmate_res, aes(x = depth)) +
     geom_density(alpha = 0.5) +
     theme_Publication()
 
-
-ggplot(checkmate_res %>% filter(depth>10), aes(x = correlation, fill = match)) +
+ggplot(checkmate_res %>% filter(depth>3), aes(x = correlation, fill = match)) +
     geom_density(alpha=0.5)+
     theme_Publication()
 
@@ -70,7 +68,7 @@ checkmate_res_rev <- data.frame(
 )
 
 checkmate_res_wide <- rbind(checkmate_res, checkmate_res_rev) %>%
-    filter(depth > 10) %>%
+    filter(depth > 3) %>%
     filter(match == "matched") %>%
     group_by(sample1) %>%
     summarise(
@@ -80,16 +78,6 @@ checkmate_res_wide <- rbind(checkmate_res, checkmate_res_rev) %>%
     ) %>%
     ungroup() %>% # to remove the grouping structure
     mutate(n_partners = str_count(matched_partners, ",") + 1)
-
-
-
-
-xyz %>%
-    filter() %>%
-    filter() %>%
-    filter()
-
-
 ```
 
 
@@ -97,7 +85,115 @@ xyz %>%
 ```{r}
 mdata <- data.table::fread(here("sex_inference", "results", "mdata_with_sex_prediction.tsv")) %>%
     data.frame() %>%
-    left_join(., checkmate_res_wide, by = c("sampleid" = "sample1"))
+    left_join(., checkmate_res_wide, by = c("sampleid" = "sample1")) %>%
+    select(
+        sampleid, line, group, sex, predicted_sex, oxldlset,
+        batch1id, contains("matched"), n_partners
+    )
+
+networkData <- mdata %>%
+    filter(line %in% c("womt1", "quze6")) %>%
+    select(sampleid, matched_partners) %>%
+    separate_longer_delim(matched_partners, ", ") %>%
+    magrittr::set_colnames(c("src", "target")) 
+
+
+
+
+# make a nodes data frame out of all unique nodes in networkData
+nodes <- data.frame(name = unique(c(networkData$src, networkData$target)))
+
+# make a group variable where nodes in networkData$src are identified
+nodes$group <- nodes$name %in% networkData$src
+
+# make a links data frame using the indexes (0-based) of nodes in 'nodes'
+links <- data.frame(source = match(networkData$src, nodes$name) - 1,
+                    target = match(networkData$target, nodes$name) - 1)
+
+ColourScale <- 'd3.scaleOrdinal()
+            .domain(["TRUE", "FALSE"])
+           .range(["#FF6900", "#694489"]);'
+
+
+forceNetwork(
+    Links = links, Nodes = nodes, Source = "source",
+    Target = "target", NodeID = "name", Group = "group",
+    zoom = TRUE,
+    opacity = 1, opacityNoHover = 1, colourScale = JS(ColourScale)
+)
+
+
+
+
+library(tidyverse)
+library(networkD3)
+
+## Nodes data frame describing all the nodes in the network
+## The first entry in nodes dataframe is node 0, the next entry is node 1 and so on.
+## The nodes dataframe must be sorted according to this sequence.
+## This is the only way to tie the nodes dataframe to the links dataframe.
+
+TestNodes <- mdata %>%
+    filter(line == "womt1" | line == "quze6") %>%
+    select(group = line, id = sampleid) %>%
+    mutate(value = 1) %>%
+    arrange(id)
+
+networkData <- mdata %>%
+    filter(line %in% c("womt1", "quze6")) %>%
+    select(sampleid, matched_partners) %>%
+    separate_longer_delim(matched_partners, ", ") %>%
+    magrittr::set_colnames(c("src", "target"))  %>% 
+    arrange(src) %>% na.omit() %>% dput()
+
+
+# Create the dataframe
+df <- structure(list(src = c("MM_oxLDL8032486", "MM_oxLDL8032490", 
+"MM_oxLDL8032491", "MM_oxLDL8032491", "MM_oxLDL8032491", "MM_oxLDL8032491", 
+"MM_oxLDL8032491", "MM_oxLDL8032492", "MM_oxLDL8032492", "MM_oxLDL8032492", 
+"MM_oxLDL8032492", "MM_oxLDL8032492", "MM_oxLDL8032493", "MM_oxLDL8032493", 
+"MM_oxLDL8032493", "MM_oxLDL8032493", "MM_oxLDL8032493", "MM_oxLDL8032494", 
+"MM_oxLDL8032494", "MM_oxLDL8032494", "MM_oxLDL8032494", "MM_oxLDL8032494", 
+"MM_oxLDL8032495", "MM_oxLDL8032495", "MM_oxLDL8032495", "MM_oxLDL8032495", 
+"MM_oxLDL8032495", "MM_oxLDL8032496", "MM_oxLDL8032496", "MM_oxLDL8032496", 
+"MM_oxLDL8032496", "MM_oxLDL8032496"), target = c("MM_oxLDL8032490", 
+"MM_oxLDL8032486", "MM_oxLDL8032492", "MM_oxLDL8032493", "MM_oxLDL8032494", 
+"MM_oxLDL8032495", "MM_oxLDL8032496", "MM_oxLDL8032493", "MM_oxLDL8032494", 
+"MM_oxLDL8032495", "MM_oxLDL8032496", "MM_oxLDL8032491", "MM_oxLDL8032494", 
+"MM_oxLDL8032495", "MM_oxLDL8032496", "MM_oxLDL8032491", "MM_oxLDL8032492", 
+"MM_oxLDL8032495", "MM_oxLDL8032496", "MM_oxLDL8032491", "MM_oxLDL8032492", 
+"MM_oxLDL8032493", "MM_oxLDL8032496", "MM_oxLDL8032491", "MM_oxLDL8032492", 
+"MM_oxLDL8032493", "MM_oxLDL8032494", "MM_oxLDL8032491", "MM_oxLDL8032492", 
+"MM_oxLDL8032493", "MM_oxLDL8032494", "MM_oxLDL8032495")), row.names = c(2L, 
+6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 16L, 17L, 18L, 
+19L, 20L, 21L, 22L, 23L, 24L, 25L, 26L, 27L, 28L, 29L, 30L, 31L, 
+32L, 33L, 34L, 35L, 36L), class = "data.frame", na.action = structure(c(`1` = 1L, 
+`3` = 3L, `4` = 4L, `5` = 5L), class = "omit"))
+
+# Remove rows that contain the same information
+df_unique <- df[!duplicated(df), ]
+df_unique <- df[!duplicated(t(apply(df, 1, sort))), ]
+
+# Display the result
+print(df_unique)
+
+
+
+links <- data.frame(
+    source = match(df_unique$src, nodes$name) - 1,
+    target = match(df_unique$target, nodes$name) - 1,
+    value = 1
+)
+
+TestLinks <- data.frame(source = 0:4,
+                        target = c(5, 5, 6, 6, 6),
+                        value = rep(1, 5))
+
+## Plot
+forceNetwork(Links = links, Nodes = TestNodes,
+             Source = "source", Target = "target",
+             Value = "value", NodeID = "group",
+             Group = "group", opacity = 1, fontSize=10, legend=TRUE, opacityNoHover =1,zoom=T)
 
 ```
 

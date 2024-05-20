@@ -23,7 +23,6 @@ knitr::opts_chunk$set(
     fig.align = "center", cache = F, dpi = 150
 )
 
-filter()
 ```
 
 ## **Introduction**
@@ -36,26 +35,48 @@ library(here)
 
 
 ### Create input for the jobarray
-The job array will convert BAM to VCF file using samtools. 
+The jobarray will lift over the VCF files from HipSci to GRCh38 because this is where we have aligned bam files. 
+
 ```{r}
-vcf_in_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data_imputed",
-    pattern = "\\.vcf$",
+vcf_in_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/WGS",
+    pattern = "\\.GRCh37\\.vcf.gz$",
     recursive = T,
     full.names = TRUE
 )
-vcf_out_files <- vcf_in_files %>% str_remove(.,".vcf$") %>% paste0(.,".GRCh38.vcf")
-log_file <- file.path(dirname(vcf_out_files), "log.out")
-rejected_variants <- file.path(dirname(vcf_out_files), "rejected_variants.vcf")
 
+# sort by timestamp
+details = file.info(vcf_in_files)
+details = details[with(details, order(as.POSIXct(mtime))), ]
+vcf_in_files = rownames(details)
+
+
+vcf_out_files <- vcf_in_files %>% str_remove(.,".GRCh37.vcf.gz$") %>% paste0(.,".GRCh38.vcf.gz")
+sample_ids <- vcf_out_files %>%
+    basename() %>%
+    str_remove(., ".wgs.GRCh38.vcf.gz") %>%
+    str_remove(., "HPSI\\d+\\w+-")
+log_file <- file.path(dirname(vcf_out_files), paste0(sample_ids, ".log.out"))
+rejected_variants <- file.path(dirname(vcf_out_files), paste0("rejected_variants.vcf.gz"))
 
 config_file = data.frame(
     vcf_in = vcf_in_files,
     vcf_out = vcf_out_files,
     rejected_variants = rejected_variants,
     log = log_file
-) %>%
-    rownames_to_column("ArrayTaskID")
+) 
 
+# some of the liftovers failed because I ran out of disk space...
+# we check if the final result file exists, and if it does, we remove that file from the config
+keep_index <- sapply(1:nrow(config_file), function(i) {
+    vcf_out_tmp <- config_file[i, "vcf_out"]
+    if (file.exists(vcf_out_tmp)) {
+        return()
+    }
+    return(i)
+}) %>% unlist()
+
+config_file <- config_file[keep_index, ] %>%
+    rowid_to_column("ArrayTaskID")
 
 data.table::fwrite(
     x = config_file,
@@ -64,7 +85,266 @@ data.table::fwrite(
     row.names = FALSE
 )
 
-5 + 5
+```
+
+
+### second pass
+It seems like some files do not have an index which suggests that something went wrong. 
+Go through all files and check if they have an index. if they dont, we delete the GRCh38 file and rerun the 
+liftover and indexing.
+
+```{r}
+vcf_in_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/WGS",
+    pattern = "\\.GRCh37\\.vcf.gz$",
+    recursive = T,
+    full.names = TRUE
+)
+
+done_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/WGS",
+    pattern = "\\.csi$",
+    recursive = T,
+    full.names = TRUE
+) %>% str_remove_all(., "\\.csi") %>% str_replace_all(., "GRCh38", "GRCh37")
+
+all(done_files %in% vcf_in_files)
+
+to_do_files <- vcf_in_files[!vcf_in_files %in% done_files]
+
+
+
+
+
+# sort by timestamp
+details = file.info(to_do_files)
+details = details[with(details, order(as.POSIXct(mtime))), ]
+to_do_files = rownames(details)
+
+
+vcf_out_files <- to_do_files %>%
+    str_remove(., ".GRCh37.vcf.gz$") %>%
+    paste0(., ".GRCh38.vcf.gz")
+
+sample_ids <- vcf_out_files %>%
+    basename() %>%
+    str_remove(., ".wgs.GRCh38.vcf.gz") %>%
+    str_remove(., "HPSI\\d+\\w+-")
+log_file <- file.path(dirname(vcf_out_files), paste0(sample_ids, ".log.out"))
+rejected_variants <- file.path(dirname(vcf_out_files), paste0("rejected_variants.vcf.gz"))
+
+config_file = data.frame(
+    vcf_in = to_do_files,
+    vcf_out = vcf_out_files,
+    rejected_variants = rejected_variants,
+    log = log_file
+) 
+
+# some of the liftovers failed because I ran out of disk space...
+# we check if the final result file exists, and if it does, we remove that file from the config
+keep_index <- sapply(1:nrow(config_file), function(i) {
+    vcf_out_tmp <- config_file[i, "vcf_out"]
+    if (file.exists(vcf_out_tmp)) {
+        return()
+    }
+    return(i)
+}) %>% unlist()
+
+config_file <- config_file[keep_index, ] %>%
+    rowid_to_column("ArrayTaskID")
+
+data.table::fwrite(
+    x = config_file,
+    file = "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/data/config_jobarray",
+    sep = "\t",
+    row.names = FALSE
+)
+```
+
+
+## Generate the array input file for the norm step
+```{r}
+vcf_in_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/WGS",
+    pattern = "\\.GRCh38\\.vcf.gz$",
+    recursive = T,
+    full.names = TRUE
+)
+
+# sort by timestamp
+details = file.info(vcf_in_files)
+details = details[with(details, order(as.POSIXct(mtime))), ]
+vcf_in_files = rownames(details)
+
+
+vcf_out_files <- vcf_in_files %>% str_remove(.,".GRCh38.vcf.gz$") %>% paste0(.,".GRCh38.norm.vcf.gz")
+sample_ids <- vcf_in_files %>%
+    basename() %>%
+    str_remove(., ".wgs.GRCh38.vcf.gz") %>%
+    str_remove(., "HPSI\\d+\\w+-")
+
+config_file = data.frame(
+    vcf_in = vcf_in_files,
+    vcf_out = vcf_out_files
+) 
+
+# some of the liftovers failed because I ran out of disk space...
+# we check if the final result file exists, and if it does, we remove that file from the config
+keep_index <- sapply(1:nrow(config_file), function(i) {
+    vcf_out_tmp <- config_file[i, "vcf_out"]
+    if (file.exists(vcf_out_tmp)) {
+        return()
+    }
+    return(i)
+}) %>% unlist()
+
+config_file <- config_file[keep_index, ] %>%
+    rowid_to_column("ArrayTaskID")
+
+data.table::fwrite(
+    x = config_file,
+    file = "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/data/config_jobarray_norm",
+    sep = "\t",
+    row.names = FALSE
+)
+```
+
+
+
+### Generate the config data for processing the genotype Arrays
+```{r}
+vcf_in_files <- list.files("~/rds/rds-jmmh2-results/private/oxLDL/HipSci/genotype_array_data_imputed",
+    pattern = "vcf.gz$",
+    recursive = T,
+    full.names = TRUE
+)
+# sort by timestamp
+details = file.info(vcf_in_files)
+details = details[with(details, order(as.POSIXct(mtime))), ]
+vcf_in_files = rownames(details)
+
+vcf_out_files <- vcf_in_files %>%
+    str_remove(., ".vcf.gz$") %>%
+    paste0(., ".GRCh38.norm.vcf.gz")
+
+vcf_tmp1 <- vcf_in_files %>%
+    str_remove(., ".vcf.gz$") %>%
+    paste0(., stringi::stri_rand_strings(10, 10, "[A-Z]"), ".vcf.gz")
+
+vcf_tmp2 <- vcf_in_files %>%
+    str_remove(., ".vcf.gz$") %>%
+    paste0(., stringi::stri_rand_strings(10, 10, "[A-Z]"), ".vcf.gz")
+
+config_file = data.frame(
+    vcf_in = vcf_in_files,
+    vcf_out = vcf_out_files,
+    vcf_tmp1 = vcf_tmp1,
+    vcf_tmp2 = vcf_tmp2
+) 
+
+# some of the liftovers failed because I ran out of disk space...
+# we check if the final result file exists, and if it does, we remove that file from the config
+keep_index <- sapply(1:nrow(config_file), function(i) {
+    vcf_out_tmp <- config_file[i, "vcf_out"]
+    if (file.exists(vcf_out_tmp)) {
+        return()
+    }
+    return(i)
+}) %>% unlist()
+
+config_file <- config_file[keep_index, ] %>%
+    rowid_to_column("ArrayTaskID")
+
+data.table::fwrite(
+    x = config_file,
+    file = "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/data/config_jobarray_genotype_processing",
+    sep = "\t",
+    row.names = FALSE
+)
+```
+
+
+### Create a bed file covering all gens
+
+```{r}
+library(rtracklayer)
+library(GenomicRanges)
+library(tidyverse)
+gtf_file <- "/rds/project/rds-C1Ph08tkaOA/private/oxLDL/RNA_seq/results/genome/Homo_sapiens.GRCh38.dna.primary_assembly_genes.gtf"
+
+# Import the GTF file
+gtf_data <- import(gtf_file)
+
+# Filter for genes
+genes <- gtf_data[gtf_data$type == "gene" & gtf_data$gene_biotype %in% c("protein_coding", "lncRNA")]
+
+
+
+
+extended_genes <- GRanges(seqnames = seqnames(genes),
+                          ranges = IRanges(start = start(genes),
+                                           end = end(genes)),
+                          strand = strand(genes),
+                          gene_id = genes$gene_id,
+                          gene_name = genes$gene_name)
+extended_genes <- extended_genes[seqnames(extended_genes) %in% c(1:22, "X", "Y"),]
+
+start(extended_genes)[start(extended_genes) < 1] <- 1
+
+# Convert to a data frame
+bed_df <- as.data.frame(extended_genes) %>%
+  select(seqnames, start, end, gene_id, gene_name, strand) %>% 
+  arrange(seqnames, start)
+
+
+data.table::fwrite(
+    x = bed_df,
+    file="/rds/project/rds-C1Ph08tkaOA/private/oxLDL/RNA_seq/results/genome/genes_bed.bed",
+    row.names=FALSE,
+    col.names=FALSE,
+    sep="\t"
+)
+```
+
+
+### Generate the QTL input
+```{r}
+library(tidyverse)
+# first pass finished with 35 failed jobs from the array. rerun it
+failed_jobs <- data.table::fread(here("QTLtools_MBV", "scripts", "failed.jobs"),
+    skip = 1,
+    data.table = F
+)
+bam_files <-  list.files("~/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon/",
+    pattern = "bam$",
+    recursive = F,
+    full.names = TRUE
+)
+
+out_dir <- "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/results"
+sample_ids <- str_extract(bam_files, "MM_oxLDL\\d+")
+out_names <- file.path(out_dir, paste0(sample_ids, ".mbv.out"))
+out_names_small <- file.path(out_dir, paste0(sample_ids, "_small.mbv.out"))
+
+
+config_file = data.frame(
+    in_bam = bam_files,
+    out_file = out_names,
+    out_file_small = out_names_small
+) %>%
+    rowid_to_column("ArrayTaskID")
+
+config_file <- config_file[failed_jobs[, 1], ] %>%
+    dplyr::select(-ArrayTaskID) %>%
+    rowid_to_column("ArrayTaskID")
+
+
+data.table::fwrite(
+    x = config_file,
+    file = "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/data/config_jobarray_qtltools",
+    sep = "\t",
+    row.names = FALSE
+)
+
 
 
 ```
+
+
