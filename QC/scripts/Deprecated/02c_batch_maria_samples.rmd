@@ -1,4 +1,4 @@
----
+$---
 title: "RNA seq batch correction using metadata"
 author: "Nick Hirschmuller"
 date: "`r format(Sys.time(), '%d %B, %Y')`"

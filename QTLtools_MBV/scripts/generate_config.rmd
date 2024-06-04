@@ -308,17 +308,17 @@ data.table::fwrite(
 ```{r}
 library(tidyverse)
 # first pass finished with 35 failed jobs from the array. rerun it
-failed_jobs <- data.table::fread(here("QTLtools_MBV", "scripts", "failed.jobs"),
-    skip = 1,
-    data.table = F
-)
+# failed_jobs <- data.table::fread(here("QTLtools_MBV", "scripts", "failed.jobs"),
+#     skip = 1,
+#     data.table = F
+# )
 bam_files <-  list.files("~/rds/rds-jmmh2-results/private/oxLDL/RNA_seq/results/star_salmon/",
     pattern = "bam$",
     recursive = F,
     full.names = TRUE
 )
 
-out_dir <- "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/results"
+out_dir <- "/rds/user/nh608/hpc-work/oxLDL/QTLtools_MBV/results/selected_snps"
 sample_ids <- str_extract(bam_files, "MM_oxLDL\\d+")
 out_names <- file.path(out_dir, paste0(sample_ids, ".mbv.out"))
 out_names_small <- file.path(out_dir, paste0(sample_ids, "_small.mbv.out"))
@@ -331,7 +331,7 @@ config_file = data.frame(
 ) %>%
     rowid_to_column("ArrayTaskID")
 
-config_file <- config_file[failed_jobs[, 1], ] %>%
+config_file <- config_file %>%
     dplyr::select(-ArrayTaskID) %>%
     rowid_to_column("ArrayTaskID")
 

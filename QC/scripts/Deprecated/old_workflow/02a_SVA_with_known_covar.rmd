@@ -39,7 +39,6 @@ This means that there is, by definition, a lot of unwanted variation.
 
 Now we will try to combine these approaches. Adjust for line but also use SVA to model the unadjusted batch. 
 
-
 Not 100% sure what the correct way for this is. I am going of the following forum posts:
 https://support.bioconductor.org/p/54719/
 https://support.bioconductor.org/p/98461/ -> see comment from asaffa01

@@ -44,8 +44,8 @@ source(here("plot_theme.R"))
 
 
 ```{r}
-results <- list.files(here("QTLtools_MBV", "results"),
-    pattern = "_small.mbv.out",
+results <- list.files(here("QTLtools_MBV", "results", "selected_snps"),
+    pattern = ".mbv.out",
     full.names = TRUE
 )
 
@@ -78,8 +78,12 @@ eval_results <- lapply(results, function(i) {
         theme(legend.position = "none") +
         xlab("Fraction concordant heterozygous sites") +
         ylab("Fraction concordanthomozygous sites") +
-        ggtitle(paste(sampleid, mdata_donor, sep=" - ")) +
-        xlim(0, 1)
+        ggtitle(paste(sampleid, mdata_donor, sep = " - ")) +
+        scale_x_continuous(breaks = seq(0, 1, by = 0.25), limits = c(0, 1.1)) +
+        scale_y_continuous(breaks = seq(0, 1, by = 0.25), limits = c(0, 1.1))
+    
+    
+    
     
     # if we have just 2 clusters, the smaller one is the match.
     # if we have just one outlier, then this is the match. Outliers are labeled as "0"
@@ -120,9 +124,8 @@ eval_results <- lapply(results, function(i) {
 })
 names(eval_results) <- str_extract(results, "MM_oxLDL\\d+")
 
-
 # save all plots as one biiiig PDF :) 
-pdf(here("QTLtools_MBV", "results", "imgs", "concordance_plots_small.pdf"), width=8, height=6)
+pdf(here("QTLtools_MBV", "results", "imgs", "concordance_plots_selected_snps.pdf"), width=8, height=6)
 for (i in 1:length(eval_results)){
     print(i)
     print(eval_results[[i]][["plot"]])
@@ -134,9 +137,11 @@ dev.off()
 
 # MM_oxLDL7623715 -> only one match (which is fine). But many samples in vcf with 0 concordant heterozygous sites...
 
+# oxLDL9752107 -> looks really weird, the other samples from that donor look fine.
+
 mapping_df <- lapply(eval_results, function(i) {
     i[["mapping"]]
-}) %>% bind_rows()
+}) %>% bind_rows() 
 
 
 mapping_df <- mapping_df %>% left_join(., mdata %>%
@@ -145,17 +150,31 @@ mapping_df <- mapping_df %>% left_join(., mdata %>%
 by = "sampleid"
 )
 
+
 # load in the mdata that has the predicted sex info
 sex_mdata <- data.table::fread(here("sex_inference", "results", "mdata_with_sex_prediction.tsv"), data.table=F)
 mapping_df <- mapping_df %>%
     left_join(., sex_mdata %>% select(sampleid, predicted_sex, predicted_prob)) %>%
-    mutate(predicted_sex = factor(predicted_sex))
+    mutate(predicted_sex = factor(predicted_sex)) %>%
+    dplyr::rename(donor_predicted=donor)
+
+
+## save the mapping_df
+data.table::fwrite(mapping_df,
+    here("QTLtools_MBV", "results", "mapping.tsv"),
+    sep = "\t",
+    row.names = FALSE
+)
+
+
+
+
 
 # remove all samples where we only had one big cluster.
 # this means that we did not have any outliers.
 # probably means that the sample was just not covered in the vcf which is likely
 mapping_df_filtered <- mapping_df %>%
-    filter(donor != "?")
+    filter(donor_predicted != "?")
 
 # check how big the overlap between our donors is and the samples in the vcf
 # load a random result
@@ -167,25 +186,156 @@ vcf_samples <- data.table::fread(results[1]) %>%
     unique()
 table(unique(mapping_df$donor_mdata) %in% unique(vcf_samples))
 
-# 85 samples are not public. for ~(510) 85*6 samples we expect one big cluster. we obseve 466 which seems very reasonable.
-
-
-## extract samples that "misbehave".
-# for example missmatch between predicted and mdata or multiple predicted
-
-abnormal <- mapping_df_filtered %>%
-    filter((str_count(donor, " | ") > 0) | (donor != donor_mdata))
+# 85 samples are not public. for ~(510) 85*6 samples we expect one big cluster. 
+# we obseve 509 which matches extremely well.
 perfect <- mapping_df_filtered %>%
-    filter(donor == donor_mdata ) 
+    filter(donor_predicted == donor_mdata ) 
 
 # sex perfectly matches for the good ones
 perfect$sex == perfect$predicted_sex
-
-# create a pdf showing the perfect ones
-
-# and create pdf showing the shit ones
+```
 
 
+
+
+### Investigate the mismatches
+```{r}
+## extract samples that "misbehave".
+# for example missmatch between predicted and mdata or multiple predicted
+abnormal <- mapping_df_filtered %>%
+    filter((str_count(donor_predicted, " | ") > 0) | (donor_predicted != donor_mdata))
+
+# load in the sex that is recorded by the hipsci project
+hipsci_mdata <- data.table::fread(here("data", "oxLDL_data", "HipSci", "HipSci_donors.tsv"))
+hipsci_mdata$Name <- str_remove_all(hipsci_mdata$Name, "HPSI-")
+
+
+mapping_df_filtered <- mapping_df_filtered %>%
+    left_join(., hipsci_mdata %>% select(Name, hipsci_sex = Sex),
+        by = c("donor_mdata" = "Name")
+    )
+
+# The donor sex in the meta data matches the donor sex of hipsci.
+table(mapping_df_filtered$hipsci_sex == mapping_df_filtered$sex)
+
+
+### plot the abnormal samples:
+
+pdf(here("QTLtools_MBV", "results", "imgs", "abnormal_matches_selected_snps.pdf"), width=8, height=6)
+for (i in results) {
+    print(which(i == results))
+    sampleid <- str_extract(i, "MM_oxLDL\\d+")
+    # we only want to plot the abnormal samples
+    if (!sampleid %in% abnormal$sampleid) {
+        next
+    }
+    mbv_res <- data.table::fread(i) %>%
+        data.frame() %>%
+        na.omit()
+    
+    mdata_donor <- mdata[mdata$sampleid == sampleid, "line"]
+    db_result <- dbscan(mbv_res %>% select(contains("perc_")), eps = 0.08, minPts = 2)
+    mbv_res$cluster <- db_result$cluster
+    plot <- ggplot(mbv_res, aes(perc_het_consistent, perc_hom_consistent, color = as.character(cluster))) +
+        geom_point() +
+        chameleon::scale_color_chameleon() +
+        theme_Publication() +
+        theme(legend.position = "none") +
+        xlab("Fraction concordant heterozygous sites") +
+        ylab("Fraction concordanthomozygous sites") +
+        ggtitle(paste(sampleid, mdata_donor, sep = " - ")) +
+        scale_x_continuous(breaks = seq(0, 1, by = 0.25), limits = c(0, 1.1)) +
+        scale_y_continuous(breaks = seq(0, 1, by = 0.25), limits = c(0, 1.1))
+        
+
+    # if we have just 2 clusters, the smaller one is the match.
+    # if we have just one outlier, then this is the match. Outliers are labeled as "0"
+    if (n_distinct(mbv_res$cluster) == 2) {
+        match = mbv_res %>% filter(cluster %in% c(0, 2))
+    } else if (n_distinct(mbv_res$cluster) == 1) {
+        print("just one cluster")
+        match = data.frame(SampleID = "?")
+    } else {
+        print("multimatch")
+        # cluster 1 is hopefully the big one
+        match = mbv_res %>%
+            filter(cluster != 1) %>%
+            filter(perc_het_consistent > 0.8)
+    }
+
+    donor <- str_remove_all(match$SampleID, "HPSI\\d+i?p?f?-") %>%
+        str_remove_all(., "_\\d") %>%
+        unique()
+
+    mapping = data.frame("donor" = paste(donor, collapse = " | "), "sampleid" = sampleid)
+
+    plot <- plot +
+        ggrepel::geom_label_repel(
+            data = mbv_res %>%
+                filter(SampleID %in% match$SampleID) %>%
+                mutate(SampleID = str_remove_all(SampleID, "HPSI\\d+i?p?f?-")),
+            aes(label = SampleID),
+            max.overlaps = 50
+        )
+    print(plot)
+}
+dev.off()
+
+
+abnormal <- abnormal %>%
+    left_join(., hipsci_mdata %>% select(Name, hipsci_sex = Sex),
+        by = c("donor_predicted" = "Name")
+    )
+mapping_df<- left_join(mapping_df, hipsci_mdata %>% select(Name, hipsci_sex = Sex),
+    by = c("donor_predicted" = "Name")
+)
+
+
+table(mapping_df$predicted_sex == mapping_df$hipsci_sex, useNA="always")
+```
+
+### create a list of all donor swaps
+
+```{r}
+
+abnormal %>%
+    select(sampleid, donor_mdata,
+        sex_mdata = sex,
+        group,
+        donor_predicted,
+        sex_predicted = predicted_sex,
+        sex_hipsci_mdata = hipsci_sex
+    ) %>%
+    filter(donor_mdata!="voas") %>% 
+    data.table::fwrite(
+        .,
+        file = here("QTLtools_MBV", "results", "donor_swaps.tsv"), sep = "\t", row.names = F
+    )
+
+
+```
+
+
+### Create a network that shows the mislabeled samples
+```{r}
+# export this to cytoscape and do it there... is just much simpler
+df <- abnormal %>%
+    distinct(.[, c("donor_predicted", "donor_mdata")]) %>%
+     %>% 
+    filter(!donor_predicted == "seru | zerv")
+
+df
+
+
+data.table::fwrite(
+    df[, c("donor_mdata", "donor_predicted")],
+    here("QTLtools_MBV", "results", "abnormal_graph_selected_snps.tsv"),
+    sep="\t", row.names=FALSE, col.names=FALSE
+)
+
+
+
+any(grepl("fiau", mbv_res[, 1]))
 
 
 ```

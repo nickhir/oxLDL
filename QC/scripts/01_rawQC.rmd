@@ -1,0 +1,728 @@
+---
+title: "RNA inital QC"
+author: "Nick Hirschmuller"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+always_allow_html: yes
+output:
+  html_document:
+    word_document:
+    toc: yes
+    toc_depth: '3'
+    code_folding: hide
+  pdf_document:
+    number_sections: yes
+    toc: false
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = T, warning = F, error = F, message = F,
+    fig.align = "center", cache = F, dpi = 150
+)
+```
+
+## **Introduction**
+The [nf-core RNAseq pipeline](https://github.com/nf-core/rnaseq) already does a very extensive set of quality control steps 
+based on the read level (for example # Duplicated reads, GC content, mapping rate, read distribution, …). 
+In this script, we will do some qulaity control steps based on the 
+quantified counts (using [STAR](https://github.com/alexdobin/STAR) followed by [salmon](https://combine-lab.github.io/salmon/)).
+We will also make a few plots to explore the metadata
+
+
+```{r, load libraries}
+library(org.Hs.eg.db)
+library(DESeq2)
+library(magrittr)
+library(PCAtools)
+library(tidyverse)
+library(umap)
+library(patchwork)
+library(httpgd)
+
+library(here)
+source(here("plot_theme.R"))
+source(here("helper_functions.R"))
+```
+
+
+## **Description of metadata**
+Few observations: 
+(a) A few important confounders (e.g. `age`, `ethnicity`) are missing for some samples 
+(b) There seem to be a few technical replicates (cell lines that were used more than 6 times) 
+(c) MM_oxLDL7159504 seems to contain conflicting information. 
+oxLDL treated according to column `oxLDL` but control according to column `sampeltype`.
+
+```{r}
+mdata <- readxl::read_excel(here("data", "mdata_google_spreadsheet.xlsx"),
+    sheet = "RNA Sequencing samples"
+) %>% data.frame()
+
+submission_mdata <- data.table::fread(here("data", "oxLDL_data", "RNA_seq", "macromap_samplesheet.csv"),
+    data.table = FALSE
+)
+
+# reformat some mdata entries
+mdata <- mdata %>%
+    dplyr::rename(condition = oxldl) %>%
+    dplyr::mutate(condition = ifelse(condition == 100, "stim", "ctrl")) %>%
+    dplyr::rename(sex = set) %>%
+    dplyr::mutate(group = paste(state, condition, sep = "_")) %>%
+    dplyr::select(sampleid, line, group, state, condition, sex, ethnicity, age, oxldlset, pool, batch1id)
+
+mdata$ethnicity <- case_when(
+    mdata$ethnicity == "White - White British" ~ "White British",
+    mdata$ethnicity == "White - White other" ~ "White Other",
+    mdata$ethnicity == "White - Other" ~ "White Other",
+    mdata$ethnicity == "Asian /Asian British- Indian" ~ "Asian British",
+    T ~ mdata$ethnicity
+)
+
+# define some factors
+mdata <- mdata %>%
+    mutate(
+        group = factor(group, levels = c("M0_ctrl", "M1_ctrl", "M2_ctrl", "M0_stim", "M1_stim", "M2_stim")),
+        line = factor(line),
+        state = factor(state, levels = c("M0", "M1", "M2")),
+        condition = factor(condition, levels = c("ctrl", "stim")),
+        sex = factor(sex, levels = c("Female", "Male")),
+        ethnicity = factor(ethnicity, levels = c("White British", "White Other", "Asian British", "NA")),
+        oxldlset = factor(oxldlset, levels = sort(unique(mdata$oxldlset))),
+        age = factor(age, levels = sort(unique(mdata$age))),
+        pool = factor(pool, levels = str_sort(unique(mdata$pool), numeric=T)),
+        batch1id = factor(batch1id, levels = str_sort(unique(mdata$batch1id), numeric=T)),
+    )
+
+# make sure all samples ocurre in the submission script
+stopifnot(all(mdata$sampleid %in% submission_mdata$sample))
+stopifnot(n_distinct(mdata$sampleid) == nrow(mdata))
+
+age <- plot_column_table(
+    mdata %>%
+        distinct(line, .keep_all = T) %>%
+        pull(age),
+    include_n = T
+) +
+    ggtitle("Age distribution") +
+    xlab("Age") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+
+rna_pool <- plot_column_table(mdata$pool %>%
+    str_remove_all("RNA ") %>%
+    factor(., levels = c("pilot", as.character(1:17))), include_n=TRUE) +
+    ggtitle("RNA pool distribution") +
+    xlab("RNA pool")
+
+
+state <- plot_column_table(mdata$state, include_n = T) +
+    ggtitle("Macrophage group distribution") +
+    xlab("Macrophage group")
+
+# some lines have more than the expected number (6) of entries. Take a look at them
+# we might have to remove one of them because they are technical replicates and not biological ones.
+lines <- plot_column_table(mdata$line) +
+    ggtitle("Cell line distribution") +
+    xlab("Cell lines") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+# simple technical replicates sometimes, even in the same RNA pool and batch
+# for example MM_oxLDL9752052 and MM_oxLDL9752058
+mdata %>%
+    group_by(line) %>%
+    mutate(n_lines = n()) %>%
+    filter(n_lines > 6) %>%
+    arrange(line) 
+
+condition <- plot_column_table(mdata$condition,
+    include_n = T
+) +
+    ggtitle("Condition distribution") +
+    xlab("Condition")
+
+
+oxLDL_set <- plot_column_table(factor(mdata$oxldlset))+
+    ggtitle("oxLDL set distribution") +
+    xlab("oxLDL set") +
+    theme(
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+sex <- plot_column_table(
+    mdata %>%
+        distinct(line, .keep_all = T) %>%
+        pull(sex),
+    include_n = T
+) +
+    ggtitle("Sex distribution") +
+    xlab("Sex")
+
+ethnicity <- plot_column_table(mdata$ethnicity,
+    include_n = TRUE
+) +
+    ggtitle("Ethnicity") +
+    xlab("Ethnicity") +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+batches <- plot_column_table(as.character(mdata$batch1id), include_n = TRUE)+
+    ggtitle("Batches distribution") +
+    xlab("Batch")+
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust = 0.5))
+
+    # combine the plots
+combined_plot <- wrap_plots(
+    age, sex, ethnicity,
+    lines, oxLDL_set, batches,
+    state, condition,
+    ncol = 3,
+    byrow = TRUE
+)
+ggsave(combined_plot,
+    filename = here("QC", "results", "imgs", "mdata_overview.png"),
+    dpi = 150, width = 18, height = 8
+)
+data.table::fwrite(mdata, here("QC", "results", "mdata_clean.tsv"), sep="\t", row.names=FALSE)
+# so factor information remains
+saveRDS(mdata, here("QC", "results", "mdata_clean.rds"))
+```
+
+## **Count data quality control**
+Read in the count data generated by the pipeline. They were slightly modified using the 
+script preprocessing/scripts/unify_geneID_to_geneName.rmd
+
+```{r}
+raw_counts <- data.table::fread(
+    here("preprocessing", "results", "gene_counts_length_scaled_filtered.tsv")
+) %>% data.frame()
+raw_counts_matrix <- as.matrix(raw_counts[,2:ncol(raw_counts)])
+rownames(raw_counts_matrix) <- raw_counts$gene_name
+
+# make sure mdata order matches the column names of raw_counts
+mdata <- mdata[match(colnames(raw_counts_matrix), mdata$sampleid), ]
+libsize <- colSums(round(raw_counts_matrix)) %>% enframe(name="sampleid", value="libsize")
+mdata <- mdata %>% left_join(.,libsize, by="sampleid")
+rownames(mdata) <- mdata$sampleid
+data.table::fwrite(mdata, here("QC", "results", "mdata_clean.tsv"), sep="\t", row.names=FALSE)
+# so factor information remains
+saveRDS(mdata, here("QC", "results", "mdata_clean.rds"))
+dds0 <- DESeqDataSetFromMatrix(round(raw_counts_matrix),
+    colData = mdata,
+    design = ~1
+)
+```
+
+### Filter genes
+Keep protein coding and lnc genes with mean expr > 0.5 TPM per condition in at least half of the conditions (3)
+
+```{r}
+# remove some lowly expressed genes
+tpm_data <- data.table::fread(here("preprocessing", "results", "gene_counts_tpm.tsv"), data.table = FALSE)
+tpm_long <- tpm_data %>%
+    pivot_longer(-gene_name, names_to = "sample", values_to = "tpm") %>%
+    left_join(., mdata %>% select(sampleid, group), by = c("sample" = "sampleid"))
+group_wise_avg <- tpm_long %>%
+    group_by(gene_name, group) %>%
+    summarise(avg_tpm = mean(tpm))  %>% 
+    ungroup()
+# get list of genes to keep
+keep_genes <- group_wise_avg %>%
+    group_by(gene_name) %>%
+    summarize(high_tpm_count = sum(avg_tpm > 0.5)) %>% 
+    filter(high_tpm_count >= 3) %>%
+    pull(gene_name)
+
+# now remove the genes that are not protein coding or lnc
+gene_info <- rtracklayer::import(here("data", "oxLDL_data", "RNA_seq", "results", "genome", "Homo_sapiens.GRCh38.dna.primary_assembly_genes.gtf")) %>%
+    as.data.frame() %>%
+    filter(type == "gene") %>%
+    select(gene_id, gene_name, gene_biotype)
+
+keep_genes <- keep_genes[keep_genes %in% (gene_info %>%
+    filter(gene_biotype %in% c("protein_coding", "lncRNA")) %>%
+    pull(gene_name))]
+
+
+dds0 <- dds0[rownames(dds0) %in% keep_genes, ]
+vsd_data <- vst(dds0)
+norm_data <- assay(vsd_data)
+saveRDS(dds0, here("QC", "results", "dds_original.rds"))
+```
+
+
+
+
+
+
+### Create QC plots for uncorrected data
+Clearly strong batch effects. Main culprits are:
+(a) batch1id
+(b) pool (overlaps with batch1id)
+(c) age
+Our variables of interest seem to not associate with any PCs.
+
+Furthermore, we observe 7 samples which are far away from the rest. Further investigate these.
+```{r}
+#################
+# CALCULATE PCA #
+#################
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds0),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap(t(norm_data))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>% 
+    left_join(., mdata)
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("QC", "results", "imgs", "all_samples","association_heatmap.png"), res=150, width=9, height=5.5, units="in")
+association_output$heatmap
+dev.off()
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+
+PC_pairings <- lapply(1:7, function(x){
+    c(2*x-1,2*x)
+})
+
+for (i in PC_pairings) {
+    print(str_interp("Working on PC${i[1]} and PC${i[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+        p <- density_scatter(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${i[1]}"),
+            y_variable = str_interp("PC${i[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+        )
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "QC", "results", "imgs", "all_samples", str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}.png")
+        ),
+        dpi = 150,
+        width = 18,
+        height = 11.5,
+    )
+}
+
+################
+# BOXPLOTS PCA #
+################
+plots <- lapply(columns_to_plot, function(x) {
+    p <- plot_categorical_covar(
+        df = pca_plot_df,
+        covar = x,
+        PC = paste0("PC", 1:4)
+    ) %>% wrap_plots(., ncol = 2) &
+        theme(
+            axis.text.x = element_blank(),
+            axis.text.y = element_text(size=5, face="bold")
+        )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "all_samples", "PCA_all_covariates_boxplots.png"),
+    dpi = 150,
+    width = 18,
+    height = 11.5,
+)
+
+
+##############
+# UMAP PLOTS #
+##############
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "all_samples", "UMAP_all_covariates.png"),
+    dpi = 150,
+    width = 18,
+    height = 11.5,
+)
+
+################
+# BOXPLOTS UMAP #
+################
+plots <- lapply(columns_to_plot, function(x) {
+    p <- plot_categorical_covar(
+        df = umap_plot_df,
+        covar = x,
+        PC = paste0("UMAP", 1:2)
+    ) %>% wrap_plots(., ncol = 2) &
+        theme(
+            axis.text.x = element_blank(),
+            axis.text.y = element_text(size=5, face="bold")
+        )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "all_samples", "UMAP_all_covariates_boxplots.png"),
+    dpi = 150,
+    width = 18,
+    height = 11.5,
+)
+```
+
+### Identify and justify outliers
+For PC1 there are some big outliers that drive the majority of variation in them. Identify them and try to see 
+why they behave so differently. 
+
+Turns out they have time lib size -> remove them
+
+```{r}
+outlier_samples <- pca_plot_df %>%
+    filter(PC1 > 100) %>%
+    pull(sample_id)
+
+########### 
+# libsize #
+###########
+low_libsize <- mdata %>% slice_min(., order_by = libsize, n=7) %>% pull(sampleid)
+
+# all have extremely low library size
+all(outlier_samples %in% low_libsize)
+
+mdata_small_lib <- mdata %>%
+    slice_min(., order_by = libsize, n = 100) %>%
+    arrange(libsize) %>%
+    mutate(sorted_index = row_number())
+
+ggplot(
+    mdata_small_lib, aes(x = sorted_index, y = libsize)) +
+    geom_bar(stat = "identity") +
+    labs(x = "Sorted library size index", y = "Library Size") +
+    theme_Publication() +
+    scale_y_continuous(expand = c(0.01,0))
+
+
+libsizes <- sort(mdata$libsize)
+ratios <- libsizes[-1] / libsizes[-length(libsizes)]
+
+
+# Create a data frame for plotting
+df <- data.frame(index = 1:(length(libsizes)-1), ratio = ratios)
+
+# Plot the ratios
+ggplot(df, aes(x = index, y = ratio)) +
+    geom_point() +
+    labs(x = "Index", y = "(n+1)/n Ratio") +
+    ggtitle("Ratios of (n+1)/n for sorted library size") +
+    theme_Publication()
+
+ggplot(pca_plot_df, aes(PC1, PC2)) +
+    geom_point() +
+    geom_point(data = pca_plot_df %>% filter(sample_id == "MM_oxLDL8032568"),
+        aes(PC1, PC2, color=sample_id), inherit.aes = FALSE) +
+    theme_Publication()
+
+ggplot(pca_plot_df, aes(PC1, PC2)) +
+    geom_point() +
+    geom_point(
+        data = pca_plot_df %>%
+            filter(libsize < 5e6),
+        aes(PC1, PC2), inherit.aes = FALSE, size = 2, color="steelblue"
+    ) +
+    theme_Publication() %+%
+    theme(legend.position = "none")
+
+
+ggplot(pca_plot_df, aes(PC1, PC2, color=log(libsize))) +
+    geom_point() 
+
+
+ggplot(pca_plot_df, aes(PC1, libsize)) +
+    geom_point() +
+    geom_smooth(method = "lm")
+
+
+
+# for PC3 and 4 it seems like the samples below 5e6 are making a big difference
+i = c(1, 2)
+density_scatter(
+    df = pca_plot_df %>% mutate(low_libsize_dummy = ifelse(libsize < 1e4, "low libsize", "normal libsize")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "low_libsize_dummy",
+    density_plot_ratio = 0.15,
+    pt_size = 4,
+    xlab = str_interp("PC${i[1]}"),
+    ylab = str_interp("PC${i[2]}")
+)
+```
+
+
+### Remove outliers and rerun PCA/UMAP
+Now we do not have any clear outliers, however we still see strong batch effects. 
+In the next Rmd (02_batch_correction.rmd), we will try different methods to currect for that. 
+
+```{r}
+outlier_samples <- pca_plot_df %>%
+    filter(PC1 > 100) %>%
+    pull(sample_id)
+
+dds0_filtered <- dds0[, !dds0$sampleid %in% outlier_samples]
+saveRDS(dds0_filtered, here("QC", "results", "dds_libsize_outliers_removed.rds"))
+vsd_data <- vst(dds0_filtered)
+norm_data <- assay(vsd_data)
+
+#################
+# CALCULATE PCA #
+#################
+pca_data <- PCAtools::pca(norm_data,
+    metadata = colData(dds0_filtered),
+    removeVar = 0.4
+)
+pca_plot_df <- pca_data$rotated[, 1:20] %>%
+    rownames_to_column("sample_id") %>%
+    left_join(., mdata, by = c("sample_id" = "sampleid"))
+for (i in 1:20) {
+    pca_plot_df[, str_interp("PC${i}_explained_var")] <- pca_data$variance[i]
+}
+
+##################
+# CALCULATE UMAP #
+##################
+umap_data <- umap(t(norm_data))
+umap_plot_df <- umap_data$layout %>%
+    data.frame() %>%
+    magrittr::set_colnames(c("UMAP1", "UMAP2")) %>%
+    rownames_to_column("sampleid") %>% 
+    left_join(., mdata)
+
+###########
+# HEATMAP #
+###########
+association_output <- covar_correlation(
+    df = pca_plot_df,
+    covars = c("pool", "state", "condition", "oxldlset", "sex", "ethnicity", "age", "batch1id", "libsize"),
+    components = paste0("PC", 1:15)
+)
+
+png(here("QC", "results", "imgs", "libsize_outliers_removed","association_heatmap.png"), res=150, width=9, height=5.5, units="in")
+association_output$heatmap
+dev.off()
+
+#############
+# PCA PLOTS #
+#############
+columns_to_plot <- c("state", "condition", "sex", "ethnicity", "age", "batch1id")
+
+PC_pairings <- lapply(1:7, function(x){
+    c(2*x-1,2*x)
+})
+for (i in PC_pairings) {
+    print(str_interp("Working on PC${i[1]} and PC${i[2]}"))
+    plots <- lapply(columns_to_plot, function(x) {
+        expl_var1 <- round(pca_plot_df[1, str_interp("PC${i[1]}_explained_var")], 2)
+        expl_var2 <- round(pca_plot_df[1, str_interp("PC${i[2]}_explained_var")], 2)
+        p <- density_scatter(
+            df = pca_plot_df,
+            x_variable = str_interp("PC${i[1]}"),
+            y_variable = str_interp("PC${i[2]}"),
+            color_by = x,
+            density_plot_ratio = 0.15,
+            pt_size = 1.2,
+            xlab = str_interp("PC${i[1]}: ${expl_var1}% variance"),
+            ylab = str_interp("PC${i[2]}: ${expl_var2}% variance")
+        )
+
+
+        p <- p +
+            plot_annotation(
+                title = x,
+                theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+            )
+        return(p)
+    })
+    final_plot <- cowplot::plot_grid(plotlist = plots, ncol = 3)
+    ggsave(
+        plot = final_plot,
+        filename = here(
+            "QC", "results", "imgs", "libsize_outliers_removed",str_interp("PCA_all_covariates_PC${i[1]}_PC${i[2]}.png")
+        ),
+        dpi = 150,
+        width = 18,
+        height = 11.5,
+    )
+}
+
+################
+# BOXPLOTS PCA #
+################
+plots <- lapply(columns_to_plot, function(x) {
+    p <- plot_categorical_covar(
+        df = pca_plot_df,
+        covar = x,
+        PC = paste0("PC", 1:4)
+    ) %>% wrap_plots(., ncol = 2) &
+        theme(
+            axis.text.x = element_blank(),
+            axis.text.y = element_text(size=5, face="bold")
+        )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "libsize_outliers_removed", "PCA_all_covariates_boxplots.png"),
+    dpi = 150,
+    width = 18,
+    height = 11.5,
+)
+
+
+##############
+# UMAP PLOTS #
+##############
+plots <- lapply(columns_to_plot, function(x) {
+    p <- density_scatter(
+        df = umap_plot_df,
+        x_variable = "UMAP1",
+        y_variable = "UMAP2",
+        color_by = x,
+        density_plot_ratio = 0.15,
+        pt_size = 1.2,
+    )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "libsize_outliers_removed", "UMAP_all_covariates.png"),
+    dpi = 150,
+    width = 18,
+    height = 11.5,
+)
+
+#################
+# BOXPLOTS UMAP #
+#################
+plots <- lapply(columns_to_plot, function(x) {
+    p <- plot_categorical_covar(
+        df = umap_plot_df,
+        covar = x,
+        PC = paste0("UMAP", 1:2)
+    ) %>% wrap_plots(., ncol = 2) &
+        theme(
+            axis.text.x = element_blank(),
+            axis.text.y = element_text(size=5, face="bold")
+        )
+    p <- p +
+        plot_annotation(
+            title = x,
+            theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 20))
+        )
+    return(p)
+})
+final_plot <- cowplot::plot_grid(plotlist = plots, ncol= 3)
+ggsave(
+    plot = final_plot,
+    filename = here("QC", "results", "imgs", "libsize_outliers_removed", "UMAP_all_covariates_boxplots.png"),
+    dpi = 150,
+    width = 18,
+    height = 11.5,
+)
+
+
+# we can still see an effect for samples with low number of total reads. 
+i = c(1, 2)
+i = c(3, 4)
+density_scatter(
+    df = pca_plot_df %>% mutate(low_libsize_dummy = ifelse(libsize < 5e6, "low libsize", "normal libsize")),
+    x_variable = str_interp("PC${i[1]}"),
+    y_variable = str_interp("PC${i[2]}"),
+    color_by = "low_libsize_dummy",
+    density_plot_ratio = 0.15,
+    pt_size = 4,
+    xlab = str_interp("PC${i[1]}"),
+    ylab = str_interp("PC${i[2]}"),
+)
+```
+
+
+```{r}
+sessionInfo()
+```

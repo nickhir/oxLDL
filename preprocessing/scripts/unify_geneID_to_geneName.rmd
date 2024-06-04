@@ -78,6 +78,50 @@ data.table::fwrite(
     file = here("preprocessing", "results", "gene_counts_length_scaled_filtered.tsv"),
     sep = "\t", row.names = FALSE
 )
+```
 
 
+### Do the same with the tpm data
+```{r}
+raw_counts <- data.table::fread(here("data", "oxLDL_data", "RNA_seq", "results", "star_salmon", "salmon.merged.gene_tpm.tsv"),
+    data.table = FALSE
+)
+gene_ids <- raw_counts %>%
+    group_by(gene_name) %>%
+    mutate(n_ = n()) %>%
+    filter(n_ > 1) %>%
+    pull(gene_id) 
+
+subset_counts <- raw_counts %>%
+    filter(gene_id %in% gene_ids) %>% 
+    arrange(gene_name)
+
+# we will keep the gene_id which has more counts on average across all samples
+subset_counts$MM_avg <- rowMeans(subset_counts[, grepl("^MM", names(subset_counts))])
+keep_gene_ids <- subset_counts %>%
+    group_by(gene_name) %>%
+    slice_max(MM_avg, n = 1, with_ties = FALSE) %>%
+    pull(gene_id)
+remove_gene_ids <- setdiff(gene_ids, keep_gene_ids)
+
+raw_counts_filtered <- raw_counts %>%
+    filter(!gene_id %in% remove_gene_ids)
+
+# QC check -> should be empty.
+raw_counts_filtered %>%
+    group_by(gene_name) %>%
+    mutate(n_ = n()) %>%
+    filter(n_ > 1) %>%
+    pull(gene_id) 
+
+data.table::fwrite(
+    x = raw_counts_filtered %>% select(-gene_id),
+    file = here("preprocessing", "results", "gene_counts_tpm.tsv"),
+    sep = "\t", row.names = FALSE
+)
+```
+
+
+```{r}
+sessionInfo()
 ```
